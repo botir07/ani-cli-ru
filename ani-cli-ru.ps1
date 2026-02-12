@@ -557,16 +557,85 @@ function Build-QueryString {
 }
 
 function Try-ParseJson {
-    param([string]$Body)
+    param([object]$Body)
 
-    if ([string]::IsNullOrWhiteSpace($Body)) {
+    if ($null -eq $Body) {
         return $null
     }
 
+    $text = if ($Body -is [string]) { [string]$Body } else { [string]$Body }
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+
+    # Remove BOM and surrounding whitespace that can break ConvertFrom-Json.
+    $text = $text.Trim()
+    $text = $text.TrimStart([char]0xFEFF)
+
     try {
-        return $Body | ConvertFrom-Json -Depth 100
+        return $text | ConvertFrom-Json -Depth 100
     } catch {
         return $null
+    }
+}
+
+function Invoke-HttpWithCurl {
+    param([string]$Uri)
+
+    $curlCmd = Get-Command 'curl.exe' -ErrorAction SilentlyContinue
+    if ($null -eq $curlCmd) {
+        return $null
+    }
+
+    $rawOutput = & $curlCmd.Source -sS -L -A $script:USER_AGENT -H 'Accept: application/json' "$Uri" -w "`n%{http_code}"
+    $curlStatus = $LASTEXITCODE
+
+    if ($rawOutput -is [Array]) {
+        $responseText = ($rawOutput -join "`n")
+    } else {
+        $responseText = [string]$rawOutput
+    }
+
+    if ($curlStatus -ne 0) {
+        return @{
+            transport = 'curl'
+            ok        = $false
+            status    = 0
+            body      = $responseText
+            error     = "curl exited with status $curlStatus"
+        }
+    }
+
+    $lastBreak = $responseText.LastIndexOf("`n")
+    if ($lastBreak -lt 0) {
+        return @{
+            transport = 'curl'
+            ok        = $false
+            status    = 0
+            body      = $responseText
+            error     = 'curl response has no HTTP status suffix'
+        }
+    }
+
+    $body = $responseText.Substring(0, $lastBreak)
+    $statusText = $responseText.Substring($lastBreak + 1).Trim()
+    $statusCode = 0
+    if (-not [int]::TryParse($statusText, [ref]$statusCode)) {
+        return @{
+            transport = 'curl'
+            ok        = $false
+            status    = 0
+            body      = $body
+            error     = "invalid HTTP status: $statusText"
+        }
+    }
+
+    return @{
+        transport = 'curl'
+        ok        = $true
+        status    = $statusCode
+        body      = $body
+        error     = ''
     }
 }
 
@@ -620,51 +689,66 @@ function Invoke-ApiRequest {
     $statusCode = 0
     $body = ''
 
-    try {
-        $resp = Invoke-WebRequest -Method Get -Uri $uri -Headers @{ 'User-Agent' = $script:USER_AGENT }
-        $statusCode = [int]$resp.StatusCode
-        $body = [string]$resp.Content
-    } catch {
-        $statusCode = 0
-
-        if ($_.Exception.PSObject.Properties['Response'] -and $null -ne $_.Exception.Response) {
-            $respObj = $_.Exception.Response
-
-            if ($respObj.PSObject.Properties['StatusCode']) {
-                $statusCode = [int]$respObj.StatusCode
-            }
-
-            if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
-                $body = [string]$_.ErrorDetails.Message
-            } elseif ($respObj.PSObject.Methods.Name -contains 'GetResponseStream') {
-                try {
-                    $stream = $respObj.GetResponseStream()
-                    if ($null -ne $stream) {
-                        $reader = [System.IO.StreamReader]::new($stream)
-                        $body = $reader.ReadToEnd()
-                        $reader.Close()
-                    }
-                } catch {
-                    $body = ''
-                }
-            } elseif ($respObj.PSObject.Properties['Content']) {
-                try {
-                    $body = [string]$respObj.Content.ReadAsStringAsync().Result
-                } catch {
-                    $body = ''
-                }
-            }
+    $curlResponse = Invoke-HttpWithCurl -Uri $uri
+    if ($null -ne $curlResponse) {
+        if (-not $curlResponse.ok) {
+            Die ((Msg 'api_failed') + ': ' + $curlResponse.error + " [$uri]")
         }
 
-        if ($statusCode -eq 0) {
-            Die ((Msg 'api_failed') + ': ' + $_.Exception.Message + " [$uri]")
+        $statusCode = [int]$curlResponse.status
+        $body = [string]$curlResponse.body
+    } else {
+        try {
+            $resp = Invoke-WebRequest -Method Get -Uri $uri -Headers @{ 'User-Agent' = $script:USER_AGENT; 'Accept' = 'application/json' } -UseBasicParsing
+            $statusCode = [int]$resp.StatusCode
+            $body = [string]$resp.Content
+        } catch {
+            $statusCode = 0
+
+            if ($_.Exception.PSObject.Properties['Response'] -and $null -ne $_.Exception.Response) {
+                $respObj = $_.Exception.Response
+
+                if ($respObj.PSObject.Properties['StatusCode']) {
+                    $statusCode = [int]$respObj.StatusCode
+                }
+
+                if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                    $body = [string]$_.ErrorDetails.Message
+                } elseif ($respObj.PSObject.Methods.Name -contains 'GetResponseStream') {
+                    try {
+                        $stream = $respObj.GetResponseStream()
+                        if ($null -ne $stream) {
+                            $reader = [System.IO.StreamReader]::new($stream)
+                            $body = $reader.ReadToEnd()
+                            $reader.Close()
+                        }
+                    } catch {
+                        $body = ''
+                    }
+                } elseif ($respObj.PSObject.Properties['Content']) {
+                    try {
+                        $body = [string]$respObj.Content.ReadAsStringAsync().Result
+                    } catch {
+                        $body = ''
+                    }
+                }
+            }
+
+            if ($statusCode -eq 0) {
+                Die ((Msg 'api_failed') + ': ' + $_.Exception.Message + " [$uri]")
+            }
         }
     }
 
     if ($statusCode -ge 200 -and $statusCode -lt 300) {
         $parsedBody = Try-ParseJson $body
         if ($null -eq $parsedBody) {
-            Die ((Msg 'api_failed') + ": Non-JSON response from API [$uri]")
+            $preview = [string]$body
+            $preview = $preview.Trim()
+            if ($preview.Length -gt 180) {
+                $preview = $preview.Substring(0, 180) + '...'
+            }
+            Die ((Msg 'api_failed') + ": Non-JSON response from API [$uri] => $preview")
         }
         return $parsedBody
     }
