@@ -1,89 +1,36 @@
-<<<<<<< HEAD
-# ani-cli
-
- ani-cli is a command-line interface (CLI) for managing anime and manga.
-
-## Features
-- Easy to use command-line interface
-- Supports searching for anime and manga
-- Provides information like descriptions, ratings, and more
-- Lightweight and fast
-
-## Installation
-To install ani-cli, follow these steps:
-1. Make sure you have Go installed on your system.
-2. Clone the repository:
-   ```bash
-   git clone https://github.com/botir07/ani-cli-ru.git
-   cd ani-cli-ru
-   ```
-3. Build the project:
-   ```bash
-   go build
-   ```
-4. Move the binary to your PATH:
-   ```bash
-   mv ani-cli /usr/local/bin/
-   ```
-
-## Usage
-Once installed, you can start using ani-cli by typing `ani-cli` in your terminal.
-
-### Basic Command Structure
-```bash
-ani-cli [options] [command] [arguments]
-```
-
-## Examples
-- Search for an anime:
-  ```bash
-  ani-cli search "Attack on Titan"
-  ```
-- Get details for a specific anime:
-  ```bash
-  ani-cli info "Attack on Titan"
-  ```
-
-## API Information
-ani-cli interacts with public APIs to fetch data. Ensure you adhere to their usage limits and guidelines when using this tool.
-
-## License
-This project is licensed under the MIT License. See the LICENSE file for more details.
-=======
 # ani-cli-ru
 
-`ani-cli-ru` is a POSIX `sh` command-line tool to search, stream, and download Russian anime releases from AniLibria directly from the terminal.
+`ani-cli-ru` is a terminal tool to search, stream, and download anime releases from AniLibria.
+
+- POSIX shell version: `ani-cli-ru`
+- Windows PowerShell version: `ani-cli-ru.ps1` (with `ani-cli-ru.cmd` launcher)
 
 ## Features
 
 - Search anime by Russian or English names
 - Stream episodes with `mpv`, `VLC`, or `IINA`
-- Download episodes with `aria2c` or `wget`
+- Download episodes with `aria2c`, `wget`, or PowerShell built-in downloader
 - Bilingual UI: Russian (`ru`) and English (`en`)
 - Episode selection (`-e`) and episode ranges (`-r`)
 - Quality selection: `best`, `worst`, `360p`, `480p`, `720p`, `1080p`
 - Watch history view and cleanup
-- Works on Linux, macOS, WSL, and Termux-compatible setups
+- Works on Linux, macOS, WSL, and Windows PowerShell
 
 ## Dependencies
 
-Required:
+For POSIX script (`ani-cli-ru`):
 
 - `sh` (POSIX shell)
 - `curl`
 - `jq`
+- `fzf` (or `rofi`) for interactive menu
+- Player: `mpv` or `vlc` (`iina` on macOS)
 
-Interactive menu:
+For Windows PowerShell script (`ani-cli-ru.ps1`):
 
-- `fzf` (default) or `rofi` (`--rofi`)
-
-Playback:
-
-- `mpv` (default), `vlc` (`--vlc`), or `iina` (macOS)
-
-Download mode:
-
-- `aria2c` (preferred) or `wget`
+- Windows PowerShell 5.1+ or PowerShell 7+
+- Player: `mpv.exe` or `vlc.exe`
+- Optional: `fzf` for interactive fuzzy selection
 
 ## Installation
 
@@ -93,29 +40,70 @@ cd ani-cli-ru
 chmod +x ani-cli-ru
 ```
 
-Optional system-wide install:
+Optional system-wide install on Linux/macOS:
 
 ```sh
 sudo install -m 0755 ani-cli-ru /usr/local/bin/ani-cli-ru
 ```
 
-## Usage
+## How To Run
+
+Linux/macOS/WSL:
+
+```sh
+./ani-cli-ru "attack on titan"
+./ani-cli-ru -q 720p "code geass"
+./ani-cli-ru -e 5 "demon slayer"
+```
+
+Windows PowerShell:
+
+```powershell
+.\ani-cli-ru.ps1 "Наруто"
+.\ani-cli-ru.ps1 -q 720p "demon slayer"
+.\ani-cli-ru.ps1 -e 5 "one piece"
+```
+
+Windows CMD launcher:
+
+```bat
+ani-cli-ru.cmd "naruto"
+```
+
+If script execution is blocked in PowerShell:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+## Usage Examples
 
 ```sh
 ani-cli-ru "атака титанов"
-ani-cli-ru "attack on titan"
-ani-cli-ru -q 720p "код гиас"
-ani-cli-ru -e 5 "demon slayer"
-ani-cli-ru -r 1-3 "one piece"
 ani-cli-ru -d -r 1-3 "naruto"
 ani-cli-ru --sub "your lie in april"
+```
+
+PowerShell equivalents:
+
+```powershell
+.\ani-cli-ru.ps1 "атака титанов"
+.\ani-cli-ru.ps1 -d -r 1-3 "naruto"
+.\ani-cli-ru.ps1 --sub "your lie in april"
 ```
 
 Language control:
 
 ```sh
-ANI_CLI_LANG=ru ani-cli-ru "query"
-ANI_CLI_LANG=en ani-cli-ru "query"
+ANI_CLI_LANG=ru ./ani-cli-ru "query"
+ANI_CLI_LANG=en ./ani-cli-ru "query"
+```
+
+PowerShell language control:
+
+```powershell
+$env:ANI_CLI_LANG = "ru"; .\ani-cli-ru.ps1 "query"
+$env:ANI_CLI_LANG = "en"; .\ani-cli-ru.ps1 "query"
 ```
 
 ## CLI Options
@@ -131,12 +119,12 @@ ANI_CLI_LANG=en ani-cli-ru "query"
 - `--lang ru|en`: Set UI language
 - `--sub`: Request subtitles stream when available
 - `--vlc`: Use VLC player
-- `--rofi`: Use rofi menu instead of fzf
+- `--rofi`: Use rofi menu instead of fzf (POSIX script)
 
 ## Environment Variables
 
 - `ANI_CLI_LANG`: `ru` or `en`
-- `ANI_CLI_PLAYER`: `mpv`, `vlc`, `iina`, `mpv.exe`
+- `ANI_CLI_PLAYER`: `mpv`, `vlc`, `iina`, `mpv.exe`, or `vlc.exe`
 - `ANI_CLI_QUALITY`: default quality
 - `ANI_CLI_STREAM_TYPE`: `dub` or `sub`
 - `ANI_CLI_DOWNLOAD_DIR`: download path
@@ -155,7 +143,13 @@ AniLibria `v3` is deprecated on the old endpoint. This project defaults to:
 You can still force v3-compatible mode manually:
 
 ```sh
-ANI_CLI_API_BASE="https://api.anilibria.tv/v3" ANI_CLI_API_MODE=v3 ani-cli-ru "query"
+ANI_CLI_API_BASE="https://api.anilibria.tv/v3" ANI_CLI_API_MODE=v3 ./ani-cli-ru "query"
+```
+
+PowerShell equivalent:
+
+```powershell
+$env:ANI_CLI_API_BASE="https://api.anilibria.tv/v3"; $env:ANI_CLI_API_MODE="v3"; .\ani-cli-ru.ps1 "query"
 ```
 
 ## Development
@@ -169,4 +163,3 @@ See `CONTRIBUTING.md`.
 ## License
 
 GPL-3.0. See `LICENSE`.
->>>>>>> b7c7c13 (ani-cli)
