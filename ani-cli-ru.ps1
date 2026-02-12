@@ -1,6 +1,14 @@
 ﻿#!/usr/bin/env pwsh
 
 $ErrorActionPreference = 'Stop'
+try {
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [Console]::InputEncoding = $utf8NoBom
+    [Console]::OutputEncoding = $utf8NoBom
+    $OutputEncoding = $utf8NoBom
+} catch {
+    # Ignore console encoding setup failures and continue.
+}
 
 $script:VERSION = '1.1.0'
 $script:LANGUAGE = if ($env:ANI_CLI_LANG) { $env:ANI_CLI_LANG } else { 'ru' }
@@ -19,7 +27,8 @@ if ($env:ANI_CLI_HIST_DIR) {
 }
 
 $script:LOG_ENABLED = if ($env:ANI_CLI_LOG) { $env:ANI_CLI_LOG } else { '1' }
-$script:API_BASE = if ($env:ANI_CLI_API_BASE) { $env:ANI_CLI_API_BASE } else { 'https://api.anilibria.app/api/v1' }
+$script:DEFAULT_API_BASE = 'https://api.anilibria.app/api/v1'
+$script:API_BASE = if ($env:ANI_CLI_API_BASE) { $env:ANI_CLI_API_BASE } else { $script:DEFAULT_API_BASE }
 $script:API_MODE = if ($env:ANI_CLI_API_MODE) { $env:ANI_CLI_API_MODE } else { 'auto' }
 $script:USER_AGENT = "ani-cli-ru/$($script:VERSION)"
 
@@ -115,8 +124,78 @@ function Trim-Value {
 
 function Has-Command {
     param([string]$Name)
-    if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
-    return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return $false
+    }
+
+    $candidate = $Name.Trim('"')
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        return $true
+    }
+
+    return $null -ne (Get-Command $candidate -ErrorAction SilentlyContinue)
+}
+
+function Get-WindowsPlayerCandidates {
+    if (-not $IsWindows) {
+        return @()
+    }
+
+    $paths = [System.Collections.Generic.List[string]]::new()
+
+    if ($env:ProgramFiles) {
+        $paths.Add((Join-Path $env:ProgramFiles 'VideoLAN\VLC\vlc.exe'))
+        $paths.Add((Join-Path $env:ProgramFiles 'mpv\mpv.exe'))
+    }
+
+    if (${env:ProgramFiles(x86)}) {
+        $paths.Add((Join-Path ${env:ProgramFiles(x86)} 'VideoLAN\VLC\vlc.exe'))
+        $paths.Add((Join-Path ${env:ProgramFiles(x86)} 'mpv\mpv.exe'))
+    }
+
+    if ($env:LOCALAPPDATA) {
+        $paths.Add((Join-Path $env:LOCALAPPDATA 'Programs\VLC\vlc.exe'))
+        $paths.Add((Join-Path $env:LOCALAPPDATA 'Programs\VideoLAN\VLC\vlc.exe'))
+        $paths.Add((Join-Path $env:LOCALAPPDATA 'Programs\mpv\mpv.exe'))
+    }
+
+    if ($env:USERPROFILE) {
+        $paths.Add((Join-Path $env:USERPROFILE 'scoop\apps\vlc\current\vlc.exe'))
+        $paths.Add((Join-Path $env:USERPROFILE 'scoop\apps\mpv\current\mpv.exe'))
+    }
+
+    if ($env:ChocolateyInstall) {
+        $paths.Add((Join-Path $env:ChocolateyInstall 'bin\vlc.exe'))
+        $paths.Add((Join-Path $env:ChocolateyInstall 'bin\mpv.exe'))
+    }
+
+    return @($paths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -Unique)
+}
+
+function Resolve-PlayerPath {
+    param([string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return ''
+    }
+
+    $candidate = $Name.Trim('"')
+    if (Has-Command $candidate) {
+        return $candidate
+    }
+
+    if (-not $IsWindows) {
+        return ''
+    }
+
+    $leaf = Lower (Split-Path -Leaf $candidate)
+    foreach ($path in (Get-WindowsPlayerCandidates)) {
+        if ((Lower (Split-Path -Leaf $path)) -eq $leaf) {
+            return $path
+        }
+    }
+
+    return ''
 }
 
 function Msg {
@@ -254,6 +333,40 @@ function Normalize-Quality {
         'low' { return '360p' }
         default { return '' }
     }
+}
+
+function Normalize-ApiBase {
+    param([string]$Value)
+
+    $candidate = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        return $script:DEFAULT_API_BASE
+    }
+
+    $candidate = $candidate.Trim()
+    $candidate = $candidate.Trim("'").Trim('"')
+    if ($candidate -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
+        $candidate = "https://$candidate"
+    }
+
+    $uri = $null
+    if (-not [System.Uri]::TryCreate($candidate, [System.UriKind]::Absolute, [ref]$uri)) {
+        Warn ("Invalid ANI_CLI_API_BASE, fallback to default: $($script:DEFAULT_API_BASE)")
+        return $script:DEFAULT_API_BASE
+    }
+
+    if ([string]::IsNullOrWhiteSpace($uri.Host)) {
+        Warn ("Invalid ANI_CLI_API_BASE host, fallback to default: $($script:DEFAULT_API_BASE)")
+        return $script:DEFAULT_API_BASE
+    }
+
+    $builder = [System.UriBuilder]::new($uri)
+    $builder.Path = ($builder.Path.TrimEnd('/'))
+    if ([string]::IsNullOrWhiteSpace($builder.Path)) {
+        $builder.Path = '/'
+    }
+
+    return $builder.Uri.AbsoluteUri.TrimEnd('/')
 }
 
 function Ensure-History {
@@ -484,13 +597,25 @@ function Invoke-ApiRequest {
         [hashtable]$Query = @{}
     )
 
-    $base = $script:API_BASE.TrimEnd('/')
-    $ep = $Endpoint.TrimStart('/')
-    $uri = "$base/$ep"
-    $queryString = Build-QueryString $Query
-    if ($queryString) {
-        $uri = "$uri?$queryString"
+    $baseUri = $null
+    if (-not [System.Uri]::TryCreate($script:API_BASE, [System.UriKind]::Absolute, [ref]$baseUri)) {
+        Die ("Invalid API base URL: $($script:API_BASE)")
     }
+
+    $ep = $Endpoint.TrimStart('/')
+    $builder = [System.UriBuilder]::new($baseUri)
+    $basePath = $builder.Path.TrimEnd('/')
+    if ([string]::IsNullOrWhiteSpace($basePath)) {
+        $builder.Path = "/$ep"
+    } elseif ([string]::IsNullOrWhiteSpace($ep)) {
+        $builder.Path = $basePath
+    } else {
+        $builder.Path = "$basePath/$ep"
+    }
+
+    $queryString = Build-QueryString $Query
+    $builder.Query = $queryString
+    $uri = $builder.Uri.AbsoluteUri
 
     $statusCode = 0
     $body = ''
@@ -532,7 +657,7 @@ function Invoke-ApiRequest {
         }
 
         if ($statusCode -eq 0) {
-            Die ((Msg 'api_failed') + ': ' + $_.Exception.Message)
+            Die ((Msg 'api_failed') + ': ' + $_.Exception.Message + " [$uri]")
         }
     }
 
@@ -1121,10 +1246,13 @@ function Detect-DefaultPlayer {
     }
 
     if ($IsWindows) {
-        if (Has-Command 'mpv.exe') {
-            return 'mpv.exe'
+        foreach ($candidate in @('mpv.exe', 'vlc.exe')) {
+            $resolved = Resolve-PlayerPath $candidate
+            if (-not [string]::IsNullOrWhiteSpace($resolved)) {
+                return $resolved
+            }
         }
-        return 'mpv'
+        return 'mpv.exe'
     }
 
     return 'mpv'
@@ -1134,22 +1262,33 @@ function Resolve-Player {
     $preferred = Detect-DefaultPlayer
 
     if ($script:PLAYER_FORCED) {
-        if (-not (Has-Command $preferred)) {
+        $resolvedForced = Resolve-PlayerPath $preferred
+        if ([string]::IsNullOrWhiteSpace($resolvedForced)) {
             Die ((Msg 'need_player') + ': ' + $preferred)
         }
 
-        $script:PLAYER = $preferred
+        $script:PLAYER = $resolvedForced
         return
     }
 
-    if (Has-Command $preferred) {
-        $script:PLAYER = $preferred
+    $resolvedPreferred = Resolve-PlayerPath $preferred
+    if (-not [string]::IsNullOrWhiteSpace($resolvedPreferred)) {
+        $script:PLAYER = $resolvedPreferred
         return
     }
 
-    foreach ($fallback in @('mpv.exe', 'vlc.exe', 'mpv', 'vlc', 'iina')) {
-        if (Has-Command $fallback) {
-            $script:PLAYER = $fallback
+    $fallbacks = [System.Collections.Generic.List[string]]::new()
+    foreach ($item in @('mpv.exe', 'vlc.exe', 'mpv', 'vlc', 'iina')) {
+        $fallbacks.Add($item)
+    }
+    foreach ($path in (Get-WindowsPlayerCandidates)) {
+        $fallbacks.Add($path)
+    }
+
+    foreach ($fallback in ($fallbacks | Select-Object -Unique)) {
+        $resolved = Resolve-PlayerPath $fallback
+        if (-not [string]::IsNullOrWhiteSpace($resolved)) {
+            $script:PLAYER = $resolved
             Warn "Using fallback player: $($script:PLAYER)"
             return
         }
@@ -1165,8 +1304,8 @@ function Play-Episode {
         [string]$Episode
     )
 
-    $playerLower = Lower $script:PLAYER
-    switch ($playerLower) {
+    $playerLeafLower = Lower (Split-Path -Leaf $script:PLAYER)
+    switch ($playerLeafLower) {
         'mpv' {
             & $script:PLAYER $Url "--force-media-title=$Title - $(Msg 'episode_word') $Episode"
             return
@@ -1395,6 +1534,7 @@ function Main {
 
     $script:MENU_BACKEND = Lower $script:MENU_BACKEND
 
+    $script:API_BASE = Normalize-ApiBase $script:API_BASE
     Detect-ApiMode
 
     if ($script:SHOW_LOG) {
