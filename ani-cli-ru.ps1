@@ -662,7 +662,11 @@ function Invoke-ApiRequest {
     }
 
     if ($statusCode -ge 200 -and $statusCode -lt 300) {
-        return (Try-ParseJson $body)
+        $parsedBody = Try-ParseJson $body
+        if ($null -eq $parsedBody) {
+            Die ((Msg 'api_failed') + ": Non-JSON response from API [$uri]")
+        }
+        return $parsedBody
     }
 
     $parsed = Try-ParseJson $body
@@ -1563,7 +1567,7 @@ function Main {
     }
 
     $rawResults = Search-Titles -Query $script:QUERY
-    $results = Filter-SearchResults -Results $rawResults -Query $script:QUERY
+    $results = @(Normalize-ToArray $rawResults)
     if ($results.Count -le 0) {
         Die (Msg 'no_results')
     }
