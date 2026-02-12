@@ -573,7 +573,11 @@ function Try-ParseJson {
     $text = $text.TrimStart([char]0xFEFF)
 
     try {
-        return $text | ConvertFrom-Json -Depth 100
+        $cmd = Get-Command ConvertFrom-Json -ErrorAction Stop
+        if ($cmd.Parameters.ContainsKey('Depth')) {
+            return $text | ConvertFrom-Json -Depth 100
+        }
+        return $text | ConvertFrom-Json
     } catch {
         return $null
     }
