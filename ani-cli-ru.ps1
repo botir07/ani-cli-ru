@@ -443,11 +443,11 @@ function Read-SelectionByNumber {
         [string]$Prompt
     )
 
-    Write-Output ''
-    Write-Output ($Prompt + ':')
+    Write-Host ''
+    Write-Host ($Prompt + ':')
 
     for ($i = 0; $i -lt $Lines.Count; $i++) {
-        Write-Output ("[{0}] {1}" -f ($i + 1), $Lines[$i])
+        Write-Host ("[{0}] {1}" -f ($i + 1), $Lines[$i])
     }
 
     while ($true) {
