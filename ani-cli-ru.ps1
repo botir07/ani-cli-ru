@@ -137,13 +137,13 @@ function Msg {
 
 function Die {
     param([string]$Text)
-    [Console]::Error.WriteLine("{0}: {1}" -f (Msg 'error'), $Text)
+    [Console]::Error.WriteLine(("{0}: {1}" -f (Msg 'error'), $Text))
     exit 1
 }
 
 function Warn {
     param([string]$Text)
-    [Console]::Error.WriteLine("{0}: {1}" -f (Msg 'warning'), $Text)
+    [Console]::Error.WriteLine(("{0}: {1}" -f (Msg 'warning'), $Text))
 }
 
 function Print-Help {
