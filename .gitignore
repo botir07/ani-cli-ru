@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Local Files
 *.local
 *.log
@@ -24,3 +25,24 @@ __pycache__/
 *.pyd
 env/
 venv/
+=======
+# Runtime history/state
+*.log
+.history
+*.tmp
+
+# Project-specific history path examples
+.ani-cli-ru/
+.state/
+
+# Editor and OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Test/download artifacts
+downloads/
+/tmp-downloads/
+>>>>>>> b7c7c13 (ani-cli)
