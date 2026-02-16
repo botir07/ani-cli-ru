@@ -74,7 +74,6 @@ py ui_tui.py
 ### Windows PowerShell
 
 ```powershell
-cd C:\Users\<username>\Desktop\ani-cli-ru-main
 py -m pip install -r requirements.txt
 py ui_tui.py
 ```
@@ -82,7 +81,6 @@ py ui_tui.py
 ### Windows CMD
 
 ```bat
-cd /d C:\Users\<username>\Desktop\ani-cli-ru-main
 py -m pip install -r requirements.txt
 py ui_tui.py
 ```
@@ -90,7 +88,6 @@ py ui_tui.py
 ### Linux terminal (bash/zsh)
 
 ```bash
-cd /path/to/ani-cli-ru-main
 python3 -m pip install -r requirements.txt
 python3 ui_tui.py
 ```
@@ -98,7 +95,6 @@ python3 ui_tui.py
 ### macOS terminal (zsh)
 
 ```bash
-cd /path/to/ani-cli-ru-main
 python3 -m pip install -r requirements.txt
 python3 ui_tui.py
 ```
