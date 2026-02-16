@@ -1,0 +1,1021 @@
+#!/bin/sh
+
+VERSION="1.1.0"
+
+# Defaults (overridable with environment variables)
+LANGUAGE="${ANI_CLI_LANG:-ru}"
+QUALITY="${ANI_CLI_QUALITY:-best}"
+STREAM_TYPE="${ANI_CLI_STREAM_TYPE:-dub}"
+PLAYER="${ANI_CLI_PLAYER:-}"
+MENU_BACKEND="${ANI_CLI_EXTERNAL_MENU:-fzf}"
+DOWNLOAD_DIR="${ANI_CLI_DOWNLOAD_DIR:-$PWD}"
+HIST_DIR="${ANI_CLI_HIST_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ani-cli-ru}"
+LOG_ENABLED="${ANI_CLI_LOG:-1}"
+API_BASE="${ANI_CLI_API_BASE:-https://api.anilibria.app/api/v1}"
+API_MODE="${ANI_CLI_API_MODE:-auto}"
+USER_AGENT="ani-cli-ru/${VERSION}"
+
+DOWNLOAD_MODE=0
+SHOW_LOG=0
+DELETE_LOG=0
+PLAYER_FORCED=0
+SUBTITLE_FALLBACK_WARNED=0
+EPISODE_ARG=""
+RANGE_ARG=""
+QUERY=""
+
+lower() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+trim() {
+    printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+has_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+msg() {
+    key="$1"
+    case "$LANGUAGE" in
+        ru)
+            case "$key" in
+                error) printf 'Ошибка' ;;
+                warning) printf 'Предупреждение' ;;
+                no_results) printf 'Ничего не найдено' ;;
+                select_title) printf 'Выберите аниме' ;;
+                select_episode) printf 'Выберите эпизод' ;;
+                prompt_query) printf 'Поиск аниме: ' ;;
+                playing) printf 'Проигрывание' ;;
+                downloading) printf 'Загрузка' ;;
+                history_empty) printf 'История пуста' ;;
+                history_deleted) printf 'История очищена' ;;
+                history_header) printf 'История просмотра' ;;
+                invalid_quality) printf 'Недопустимое качество. Используйте: best, worst, 360p, 480p, 720p, 1080p' ;;
+                invalid_lang) printf 'Недопустимый язык. Используйте: ru или en' ;;
+                invalid_range) printf 'Недопустимый диапазон эпизодов. Используйте формат N-M' ;;
+                invalid_episode) printf 'Недопустимый номер эпизода' ;;
+                episode_unavailable) printf 'Эпизод недоступен' ;;
+                need_menu) printf 'Для интерактивного выбора нужен fzf или rofi' ;;
+                need_player) printf 'Не найден поддерживаемый плеер (mpv, vlc, iina)' ;;
+                need_downloader) printf 'Для загрузки нужен aria2c или wget' ;;
+                need_dep) printf 'Отсутствует зависимость' ;;
+                stream_missing) printf 'Не удалось получить ссылку потока для выбранного эпизода' ;;
+                sub_fallback) printf 'Субтитры недоступны для этого релиза, используется обычный поток' ;;
+                non_interactive_pick) printf 'Неинтерактивный режим: автоматический выбор результата' ;;
+                api_failed) printf 'Ошибка запроса к AniLibria API' ;;
+                api_deprecated) printf 'Текущая версия API недоступна. Укажите актуальную через ANI_CLI_API_BASE.' ;;
+                unknown_option) printf 'Неизвестный параметр' ;;
+                choose_query) printf 'Укажите поисковый запрос' ;;
+                episode_word) printf 'Эпизод' ;;
+                download_saved) printf 'Сохранено' ;;
+                *) printf '%s' "$key" ;;
+            esac
+            ;;
+        *)
+            case "$key" in
+                error) printf 'Error' ;;
+                warning) printf 'Warning' ;;
+                no_results) printf 'No results found' ;;
+                select_title) printf 'Select anime' ;;
+                select_episode) printf 'Select episode' ;;
+                prompt_query) printf 'Search anime: ' ;;
+                playing) printf 'Playing' ;;
+                downloading) printf 'Downloading' ;;
+                history_empty) printf 'History is empty' ;;
+                history_deleted) printf 'History cleared' ;;
+                history_header) printf 'Watch history' ;;
+                invalid_quality) printf 'Invalid quality. Use: best, worst, 360p, 480p, 720p, 1080p' ;;
+                invalid_lang) printf 'Invalid language. Use: ru or en' ;;
+                invalid_range) printf 'Invalid episode range. Use N-M' ;;
+                invalid_episode) printf 'Invalid episode number' ;;
+                episode_unavailable) printf 'Episode is not available' ;;
+                need_menu) printf 'Interactive selection requires fzf or rofi' ;;
+                need_player) printf 'No supported player found (mpv, vlc, iina)' ;;
+                need_downloader) printf 'Download mode requires aria2c or wget' ;;
+                need_dep) printf 'Missing dependency' ;;
+                stream_missing) printf 'Failed to resolve a stream URL for selected episode' ;;
+                sub_fallback) printf 'Subtitles stream is unavailable for this title, using default stream' ;;
+                non_interactive_pick) printf 'Non-interactive session: auto-selecting a result' ;;
+                api_failed) printf 'AniLibria API request failed' ;;
+                api_deprecated) printf 'Configured API version is unavailable. Set ANI_CLI_API_BASE to a working endpoint.' ;;
+                unknown_option) printf 'Unknown option' ;;
+                choose_query) printf 'Provide a search query' ;;
+                episode_word) printf 'Episode' ;;
+                download_saved) printf 'Saved' ;;
+                *) printf '%s' "$key" ;;
+            esac
+            ;;
+    esac
+}
+
+die() {
+    printf '%s: %s\n' "$(msg error)" "$*" >&2
+    exit 1
+}
+
+warn() {
+    printf '%s: %s\n' "$(msg warning)" "$*" >&2
+}
+
+print_help() {
+    case "$LANGUAGE" in
+        ru)
+            cat <<EOF_HELP
+Использование:
+  ${0##*/} [опции] "поисковый запрос"
+
+Опции:
+  -h, --help             Показать справку
+  -v, --version          Показать версию
+  -q, --quality Q        Качество: best|worst|360p|480p|720p|1080p
+  -d, --download         Режим загрузки (aria2c/wget)
+  -e, --episode N        Номер эпизода
+  -r, --range N-M        Диапазон эпизодов
+  -l, --logview          Показать историю просмотра
+  -D, --delete           Очистить историю просмотра
+  --lang ru|en           Язык интерфейса
+  --sub                  Запросить поток с субтитрами (если доступен)
+  --vlc                  Использовать VLC
+  --rofi                 Использовать rofi вместо fzf
+
+Переменные окружения:
+  ANI_CLI_LANG           Язык интерфейса (ru|en)
+  ANI_CLI_PLAYER         Плеер (mpv|vlc|iina|mpv.exe)
+  ANI_CLI_QUALITY        Качество по умолчанию
+  ANI_CLI_STREAM_TYPE    Тип потока (dub|sub)
+  ANI_CLI_DOWNLOAD_DIR   Каталог для загрузок
+  ANI_CLI_HIST_DIR       Каталог истории
+  ANI_CLI_LOG            Включить лог (1|0)
+  ANI_CLI_EXTERNAL_MENU  Меню (fzf|rofi)
+  ANI_CLI_API_BASE       Базовый URL API
+  ANI_CLI_API_MODE       Режим API (auto|v1|v3)
+
+Примеры:
+  ${0##*/} "атака титанов"
+  ${0##*/} -q 720p "код гиас"
+  ${0##*/} -e 5 "demon slayer"
+  ${0##*/} -r 1-3 -d "one piece"
+  ANI_CLI_LANG=en ${0##*/} --sub "naruto"
+EOF_HELP
+            ;;
+        *)
+            cat <<EOF_HELP
+Usage:
+  ${0##*/} [options] "search query"
+
+Options:
+  -h, --help             Show help
+  -v, --version          Show version
+  -q, --quality Q        Quality: best|worst|360p|480p|720p|1080p
+  -d, --download         Download mode (aria2c/wget)
+  -e, --episode N        Episode number
+  -r, --range N-M        Episode range
+  -l, --logview          Show watch history
+  -D, --delete           Clear watch history
+  --lang ru|en           UI language
+  --sub                  Request subtitles stream (if available)
+  --vlc                  Use VLC player
+  --rofi                 Use rofi instead of fzf
+
+Environment variables:
+  ANI_CLI_LANG           UI language (ru|en)
+  ANI_CLI_PLAYER         Player (mpv|vlc|iina|mpv.exe)
+  ANI_CLI_QUALITY        Default quality
+  ANI_CLI_STREAM_TYPE    Stream type (dub|sub)
+  ANI_CLI_DOWNLOAD_DIR   Download directory
+  ANI_CLI_HIST_DIR       History directory
+  ANI_CLI_LOG            Enable logging (1|0)
+  ANI_CLI_EXTERNAL_MENU  Menu backend (fzf|rofi)
+  ANI_CLI_API_BASE       API base URL
+  ANI_CLI_API_MODE       API mode (auto|v1|v3)
+
+Examples:
+  ${0##*/} "attack on titan"
+  ${0##*/} -q 720p "code geass"
+  ${0##*/} -e 5 "demon slayer"
+  ${0##*/} -r 1-3 -d "one piece"
+  ANI_CLI_LANG=ru ${0##*/} --sub "naruto"
+EOF_HELP
+            ;;
+    esac
+}
+
+normalize_lang() {
+    value="$(lower "$1")"
+    case "$value" in
+        ru|en) printf '%s' "$value" ;;
+        *) return 1 ;;
+    esac
+}
+
+normalize_quality() {
+    q="$(lower "$1")"
+    case "$q" in
+        best|auto) printf 'best' ;;
+        worst) printf 'worst' ;;
+        1080|1080p|fhd|fullhd) printf '1080p' ;;
+        720|720p|hd) printf '720p' ;;
+        480|480p|sd) printf '480p' ;;
+        360|360p|ld|low) printf '360p' ;;
+        *) return 1 ;;
+    esac
+}
+
+ensure_history() {
+    [ -d "$HIST_DIR" ] || mkdir -p "$HIST_DIR" || die "Cannot create history dir: $HIST_DIR"
+    HIST_FILE="$HIST_DIR/history.log"
+    [ -f "$HIST_FILE" ] || : >"$HIST_FILE"
+}
+
+show_history() {
+    ensure_history
+    if [ ! -s "$HIST_FILE" ]; then
+        printf '%s\n' "$(msg history_empty)"
+        return 0
+    fi
+    printf '%s\n' "$(msg history_header):"
+    awk -F '\t' '{
+        if (NF >= 6) {
+            printf "%s | %s | ep %s | %s | %s\n", $1, $3, $4, $5, $6
+        } else {
+            print $0
+        }
+    }' "$HIST_FILE"
+}
+
+clear_history() {
+    ensure_history
+    : >"$HIST_FILE" || die "Cannot clear history"
+    printf '%s\n' "$(msg history_deleted)"
+}
+
+append_history() {
+    [ "$LOG_ENABLED" = "1" ] || return 0
+    ensure_history
+    ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$1" "$2" "$3" "$4" "$5" >>"$HIST_FILE"
+}
+
+ensure_menu_backend() {
+    backend="$(lower "$MENU_BACKEND")"
+    case "$backend" in
+        rofi)
+            has_cmd rofi || die "$(msg need_menu): rofi"
+            MENU_BACKEND="rofi"
+            ;;
+        fzf|'')
+            has_cmd fzf || die "$(msg need_menu): fzf"
+            MENU_BACKEND="fzf"
+            ;;
+        *)
+            die "$(msg need_menu): $backend"
+            ;;
+    esac
+}
+
+menu_pick_one() {
+    prompt="$1"
+    if [ "$MENU_BACKEND" = "rofi" ]; then
+        rofi -dmenu -i -p "$prompt"
+    else
+        fzf --reverse --cycle --height=80% --prompt="$prompt> "
+    fi
+}
+
+pick_from_lines() {
+    lines="$1"
+    prompt="$2"
+    hint="$3"
+    count="$(printf '%s\n' "$lines" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')"
+
+    if [ "$count" = "0" ]; then
+        return 1
+    fi
+
+    if [ "$count" = "1" ]; then
+        printf '%s\n' "$lines" | sed -n '1p'
+        return 0
+    fi
+
+    # If there is no controlling terminal, choose deterministically.
+    # Prefer a line containing the original query hint when provided.
+    if [ ! -t 0 ] && ! tty -s 2>/dev/null; then
+        warn "$(msg non_interactive_pick)"
+        if [ -n "$hint" ]; then
+            match_line="$(printf '%s\n' "$lines" | grep -iF -- "$hint" | sed -n '1p')"
+            if [ -n "$match_line" ]; then
+                printf '%s\n' "$match_line"
+                return 0
+            fi
+        fi
+        printf '%s\n' "$lines" | sed -n '1p'
+        return 0
+    fi
+
+    ensure_menu_backend
+    printf '%s\n' "$lines" | menu_pick_one "$prompt"
+}
+
+detect_api_mode() {
+    mode="$(lower "$API_MODE")"
+    case "$mode" in
+        v1|v3)
+            API_MODE="$mode"
+            return 0
+            ;;
+        auto|'')
+            case "$API_BASE" in
+                */v3|*/v3/*|*api.anilibria.tv*) API_MODE="v3" ;;
+                *) API_MODE="v1" ;;
+            esac
+            return 0
+            ;;
+        *)
+            die "ANI_CLI_API_MODE must be auto, v1 or v3"
+            ;;
+    esac
+}
+
+api_request() {
+    endpoint="$1"
+    shift
+
+    base="$API_BASE"
+    base="${base%/}"
+    endpoint="${endpoint#/}"
+
+    # Append HTTP code at the end for portable status parsing.
+    response="$(curl -sS -L -A "$USER_AGENT" --get "$base/$endpoint" "$@" -w '\n%{http_code}' 2>&1)"
+    status=$?
+
+    if [ $status -ne 0 ]; then
+        die "$(msg api_failed): $response"
+    fi
+
+    http_code="$(printf '%s\n' "$response" | tail -n 1)"
+    body="$(printf '%s\n' "$response" | sed '$d')"
+
+    case "$http_code" in
+        2*)
+            printf '%s' "$body"
+            return 0
+            ;;
+        410)
+            if printf '%s' "$body" | jq -e '.error.message? | test("deprecated"; "i")' >/dev/null 2>&1; then
+                die "$(msg api_deprecated)"
+            fi
+            ;;
+    esac
+
+    api_error="$(printf '%s' "$body" | jq -r '.error.message // .message // empty' 2>/dev/null)"
+    if [ -z "$api_error" ]; then
+        api_error="$body"
+    fi
+
+    die "$(msg api_failed): HTTP $http_code ${api_error}"
+}
+
+search_titles_v1() {
+    q="$1"
+    api_request "app/search/releases" \
+        --data-urlencode "query=$q" \
+        --data-urlencode "include=id,name,year,episodes_total,type,season,alias"
+}
+
+search_titles_v3() {
+    q="$1"
+    api_request "title/search" \
+        --data-urlencode "search=$q" \
+        --data-urlencode "limit=30" \
+        --data-urlencode "filter=id,names,type,season,player.episodes,episodes_total"
+}
+
+search_titles() {
+    q="$1"
+    case "$API_MODE" in
+        v1) search_titles_v1 "$q" ;;
+        v3) search_titles_v3 "$q" ;;
+        *) die "Unsupported API mode: $API_MODE" ;;
+    esac
+}
+
+filter_search_results() {
+    json="$1"
+    query="$2"
+
+    printf '%s' "$json" | jq --arg q "$query" '
+        def tokens:
+            $q
+            | gsub("[^0-9A-Za-zА-Яа-яЁё]+"; " ")
+            | split(" ")
+            | map(select(length > 1));
+
+        def haystack:
+            [
+                .name.main?,
+                .name.english?,
+                .name.alternative?,
+                .names.ru?,
+                .names.en?,
+                .names.alternative?,
+                .alias?
+            ]
+            | map(select(. != null and . != ""))
+            | join(" ");
+
+        (tokens) as $tokens
+        | if ($tokens | length) == 0 then
+            .
+          else
+            map(select((haystack) as $h | ($tokens | all(. as $t | ($h | test($t; "i"))))))
+          end
+    '
+}
+
+format_search_menu_v1() {
+    printf '%s' "$1" | jq -r '
+        .[]
+        | .id as $id
+        | (.name.main // "") as $ru
+        | (.name.english // "") as $en
+        | (.year // "?") as $year
+        | (.type.value // "?") as $type
+        | (.episodes_total // "?") as $eps
+        | "[\($id)] \($ru) / \($en) • \($type) • \($year) • eps: \($eps)"
+    '
+}
+
+format_search_menu_v3() {
+    printf '%s' "$1" | jq -r '
+        .[]
+        | .id as $id
+        | (.names.ru // .names.en // "") as $ru
+        | (.names.en // "") as $en
+        | (.season.year // "?") as $year
+        | (.type.string // .type.full_string // "?") as $type
+        | (.player.episodes.string // .player.episodes.last // .episodes_total // .type.episodes // "?") as $eps
+        | "[\($id)] \($ru) / \($en) • \($type) • \($year) • eps: \($eps)"
+    '
+}
+
+format_search_menu() {
+    case "$API_MODE" in
+        v1) format_search_menu_v1 "$1" ;;
+        v3) format_search_menu_v3 "$1" ;;
+    esac
+}
+
+extract_title_id() {
+    printf '%s' "$1" | sed -n 's/^\[\([0-9][0-9]*\)\].*/\1/p'
+}
+
+fetch_title_v1() {
+    id="$1"
+    api_request "anime/releases/$id" \
+        --data-urlencode "include=id,name,episodes_total,episodes.ordinal,episodes.hls_360,episodes.hls_480,episodes.hls_720,episodes.hls_1080"
+}
+
+fetch_title_v3() {
+    id="$1"
+    api_request "title" \
+        --data-urlencode "id=$id" \
+        --data-urlencode "filter=id,names,player,type,season,episodes_total"
+}
+
+fetch_title() {
+    case "$API_MODE" in
+        v1) fetch_title_v1 "$1" ;;
+        v3) fetch_title_v3 "$1" ;;
+    esac
+}
+
+get_title_name_v1() {
+    printf '%s' "$1" | jq -r '.name.main // .name.english // "Unknown"'
+}
+
+get_title_name_v3() {
+    printf '%s' "$1" | jq -r '.names.ru // .names.en // "Unknown"'
+}
+
+get_title_name() {
+    case "$API_MODE" in
+        v1) get_title_name_v1 "$1" ;;
+        v3) get_title_name_v3 "$1" ;;
+    esac
+}
+
+get_episodes_v1() {
+    printf '%s' "$1" | jq -r '.episodes[]?.ordinal | tostring' | sort -n -u
+}
+
+get_episodes_v3() {
+    printf '%s' "$1" | jq -r '
+        .player.list as $list |
+        if ($list | type) == "object" then
+            $list
+            | to_entries[]
+            | (.value.episode // (.key | tonumber? // .key))
+            | tostring
+        elif ($list | type) == "array" then
+            $list[] | .episode | tostring
+        else
+            empty
+        end
+    ' | sort -n -u
+}
+
+get_episodes() {
+    case "$API_MODE" in
+        v1) get_episodes_v1 "$1" ;;
+        v3) get_episodes_v3 "$1" ;;
+    esac
+}
+
+sanitize_filename() {
+    printf '%s' "$1" | sed 's/[\\/:*?"<>|]/_/g; s/[[:space:]]\+/_/g; s/__\+/_/g; s/^_//; s/_$//'
+}
+
+normalize_url() {
+    url="$1"
+    host="$2"
+
+    case "$url" in
+        http://*|https://*) printf '%s\n' "$url" ; return 0 ;;
+        //*) printf 'https:%s\n' "$url" ; return 0 ;;
+        '') return 1 ;;
+    esac
+
+    if [ -z "$host" ]; then
+        printf '%s\n' "$url"
+        return 0
+    fi
+
+    case "$host" in
+        http://*|https://*) host_prefix="${host%/}" ;;
+        *) host_prefix="https://${host%/}" ;;
+    esac
+
+    case "$url" in
+        /*) printf '%s%s\n' "$host_prefix" "$url" ;;
+        *) printf '%s/%s\n' "$host_prefix" "$url" ;;
+    esac
+}
+
+pick_from_quality_object() {
+    obj="$1"
+    desired="$2"
+
+    case "$desired" in
+        1080p) keys='1080 hls_1080 fhd fullhd' ;;
+        720p) keys='720 hls_720 hd' ;;
+        480p) keys='480 hls_480 sd' ;;
+        360p) keys='360 hls_360 ld low' ;;
+        best) keys='1080 hls_1080 fhd fullhd 720 hls_720 hd 480 hls_480 sd 360 hls_360 ld low' ;;
+        worst) keys='360 hls_360 ld low 480 hls_480 sd 720 hls_720 hd 1080 hls_1080 fhd fullhd' ;;
+        *) keys='' ;;
+    esac
+
+    for key in $keys; do
+        candidate="$(printf '%s' "$obj" | jq -r --arg key "$key" '
+            if type == "object" then
+                [to_entries[] | select((.key | ascii_downcase) == ($key | ascii_downcase)) | .value][0] // empty
+            else
+                empty
+            end
+        ')"
+        if [ -n "$candidate" ] && [ "$candidate" != "null" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    printf '%s' "$obj" | jq -r '
+        if type == "object" then
+            [to_entries[] | select(.value != null and (.value | type) == "string") | .value][0] // empty
+        elif type == "string" then
+            .
+        else
+            empty
+        end
+    '
+}
+
+stream_url_v1() {
+    title_json="$1"
+    episode="$2"
+
+    ep_json="$(printf '%s' "$title_json" | jq -c --arg ep "$episode" '
+        [.episodes[]? | select((.ordinal | tostring) == $ep)][0] // empty
+    ')"
+
+    [ -n "$ep_json" ] || return 1
+    [ "$ep_json" != "null" ] || return 1
+
+    if [ "$STREAM_TYPE" = "sub" ] && [ "$SUBTITLE_FALLBACK_WARNED" = "0" ]; then
+        warn "$(msg sub_fallback)"
+        SUBTITLE_FALLBACK_WARNED=1
+    fi
+
+    case "$QUALITY" in
+        1080p)
+            url="$(printf '%s' "$ep_json" | jq -r '.hls_1080 // .hls_720 // .hls_480 // .hls_360 // empty')"
+            ;;
+        720p)
+            url="$(printf '%s' "$ep_json" | jq -r '.hls_720 // .hls_1080 // .hls_480 // .hls_360 // empty')"
+            ;;
+        480p)
+            url="$(printf '%s' "$ep_json" | jq -r '.hls_480 // .hls_360 // .hls_720 // .hls_1080 // empty')"
+            ;;
+        360p)
+            url="$(printf '%s' "$ep_json" | jq -r '.hls_360 // .hls_480 // .hls_720 // .hls_1080 // empty')"
+            ;;
+        best)
+            url="$(printf '%s' "$ep_json" | jq -r '.hls_1080 // .hls_720 // .hls_480 // .hls_360 // empty')"
+            ;;
+        worst)
+            url="$(printf '%s' "$ep_json" | jq -r '.hls_360 // .hls_480 // .hls_720 // .hls_1080 // empty')"
+            ;;
+        *)
+            url=""
+            ;;
+    esac
+
+    [ -n "$url" ] || return 1
+    printf '%s\n' "$url"
+}
+
+stream_url_v3() {
+    title_json="$1"
+    episode="$2"
+
+    host="$(printf '%s' "$title_json" | jq -r '.player.host.hls // .player.host // .host.hls // .host // empty')"
+
+    ep_json="$(printf '%s' "$title_json" | jq -c --arg ep "$episode" '
+        .player.list as $list |
+        if ($list | type) == "object" then
+            ($list[$ep] // ([($list | to_entries[] | select((.value.episode | tostring) == $ep) | .value)][0]))
+        elif ($list | type) == "array" then
+            ([.player.list[] | select((.episode | tostring) == $ep)][0])
+        else
+            empty
+        end
+    ')"
+
+    [ -n "$ep_json" ] || return 1
+    [ "$ep_json" != "null" ] || return 1
+
+    if [ "$STREAM_TYPE" = "sub" ]; then
+        stream_node="$(printf '%s' "$ep_json" | jq -c '.hls.subtitles // .hls.sub // .subtitles // empty')"
+        if [ -z "$stream_node" ] || [ "$stream_node" = "null" ]; then
+            if [ "$SUBTITLE_FALLBACK_WARNED" = "0" ]; then
+                warn "$(msg sub_fallback)"
+                SUBTITLE_FALLBACK_WARNED=1
+            fi
+            stream_node="$(printf '%s' "$ep_json" | jq -c '.hls.ru // .hls.dub // .hls // empty')"
+        fi
+    else
+        stream_node="$(printf '%s' "$ep_json" | jq -c '.hls.ru // .hls.dub // .hls // empty')"
+    fi
+
+    [ -n "$stream_node" ] || return 1
+    [ "$stream_node" != "null" ] || return 1
+
+    node_type="$(printf '%s' "$stream_node" | jq -r 'type' 2>/dev/null)"
+
+    if [ "$node_type" = "string" ]; then
+        raw_url="$(printf '%s' "$stream_node" | jq -r '.')"
+    else
+        raw_url="$(pick_from_quality_object "$stream_node" "$QUALITY")"
+    fi
+
+    [ -n "$raw_url" ] || return 1
+    normalize_url "$raw_url" "$host"
+}
+
+get_stream_url() {
+    case "$API_MODE" in
+        v1) stream_url_v1 "$1" "$2" ;;
+        v3) stream_url_v3 "$1" "$2" ;;
+    esac
+}
+
+is_number() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+build_range() {
+    start="$1"
+    end="$2"
+    awk -v s="$start" -v e="$end" 'BEGIN { for (i = s; i <= e; i++) print i }'
+}
+
+episode_exists() {
+    ep="$1"
+    list="$2"
+    printf '%s\n' "$list" | grep -Fx "$ep" >/dev/null 2>&1
+}
+
+validate_episode_selection() {
+    selected="$1"
+    available="$2"
+    for ep in $selected; do
+        episode_exists "$ep" "$available" || die "$(msg episode_unavailable): $ep"
+    done
+}
+
+detect_default_player() {
+    os_name="$(uname -s 2>/dev/null)"
+
+    if [ -n "${PLAYER:-}" ]; then
+        printf '%s\n' "$PLAYER"
+        return 0
+    fi
+
+    case "$os_name" in
+        Darwin)
+            if has_cmd iina; then
+                printf 'iina\n'
+            else
+                printf 'mpv\n'
+            fi
+            ;;
+        Linux)
+            if uname -r | grep -qi 'microsoft'; then
+                if has_cmd mpv.exe; then
+                    printf 'mpv.exe\n'
+                else
+                    printf 'mpv\n'
+                fi
+            else
+                printf 'mpv\n'
+            fi
+            ;;
+        *)
+            printf 'mpv\n'
+            ;;
+    esac
+}
+
+resolve_player() {
+    preferred="$(detect_default_player)"
+
+    if [ "$PLAYER_FORCED" = "1" ]; then
+        has_cmd "$preferred" || die "$(msg need_player): $preferred"
+        PLAYER="$preferred"
+        return 0
+    fi
+
+    if has_cmd "$preferred"; then
+        PLAYER="$preferred"
+        return 0
+    fi
+
+    for fallback in mpv vlc iina mpv.exe; do
+        if has_cmd "$fallback"; then
+            PLAYER="$fallback"
+            warn "Using fallback player: $PLAYER"
+            return 0
+        fi
+    done
+
+    die "$(msg need_player)"
+}
+
+play_episode() {
+    url="$1"
+    title="$2"
+    episode="$3"
+
+    case "$PLAYER" in
+        mpv|mpv.exe)
+            "$PLAYER" "$url" --force-media-title="$title - $(msg episode_word) $episode"
+            ;;
+        vlc)
+            vlc "$url"
+            ;;
+        iina)
+            iina "$url"
+            ;;
+        *)
+            die "$(msg need_player): $PLAYER"
+            ;;
+    esac
+}
+
+ensure_downloader() {
+    if has_cmd aria2c; then
+        DOWNLOADER="aria2c"
+    elif has_cmd wget; then
+        DOWNLOADER="wget"
+    else
+        die "$(msg need_downloader)"
+    fi
+}
+
+download_episode() {
+    url="$1"
+    title="$2"
+    episode="$3"
+
+    [ -d "$DOWNLOAD_DIR" ] || mkdir -p "$DOWNLOAD_DIR" || die "Cannot create directory: $DOWNLOAD_DIR"
+
+    safe_title="$(sanitize_filename "$title")"
+    [ -n "$safe_title" ] || safe_title="anime"
+    out_file="${safe_title}_ep${episode}_${QUALITY}_${STREAM_TYPE}.m3u8"
+
+    case "$DOWNLOADER" in
+        aria2c)
+            aria2c --continue=true --allow-overwrite=true --dir="$DOWNLOAD_DIR" --out="$out_file" "$url"
+            ;;
+        wget)
+            wget -O "$DOWNLOAD_DIR/$out_file" "$url"
+            ;;
+    esac
+
+    printf '%s: %s/%s\n' "$(msg download_saved)" "$DOWNLOAD_DIR" "$out_file"
+}
+
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                print_help
+                exit 0
+                ;;
+            -v|--version)
+                printf 'ani-cli-ru v%s\n' "$VERSION"
+                exit 0
+                ;;
+            -q|--quality)
+                shift
+                [ $# -gt 0 ] || die "$(msg invalid_quality)"
+                QUALITY="$1"
+                ;;
+            -d|--download)
+                DOWNLOAD_MODE=1
+                ;;
+            -e|--episode)
+                shift
+                [ $# -gt 0 ] || die "$(msg invalid_episode)"
+                EPISODE_ARG="$1"
+                ;;
+            -r|--range)
+                shift
+                [ $# -gt 0 ] || die "$(msg invalid_range)"
+                RANGE_ARG="$1"
+                ;;
+            -l|--logview)
+                SHOW_LOG=1
+                ;;
+            -D|--delete)
+                DELETE_LOG=1
+                ;;
+            --lang)
+                shift
+                [ $# -gt 0 ] || die "$(msg invalid_lang)"
+                LANGUAGE="$1"
+                ;;
+            --sub)
+                STREAM_TYPE="sub"
+                ;;
+            --vlc)
+                PLAYER="vlc"
+                PLAYER_FORCED=1
+                ;;
+            --rofi)
+                MENU_BACKEND="rofi"
+                ;;
+            --)
+                shift
+                break
+                ;;
+            -*)
+                die "$(msg unknown_option): $1"
+                ;;
+            *)
+                QUERY="$QUERY $1"
+                ;;
+        esac
+        shift
+    done
+
+    while [ $# -gt 0 ]; do
+        QUERY="$QUERY $1"
+        shift
+    done
+}
+
+main() {
+    parse_args "$@"
+
+    LANGUAGE="$(normalize_lang "$LANGUAGE" 2>/dev/null || true)"
+    [ -n "$LANGUAGE" ] || die "$(msg invalid_lang)"
+
+    QUALITY="$(normalize_quality "$QUALITY" 2>/dev/null || true)"
+    [ -n "$QUALITY" ] || die "$(msg invalid_quality)"
+
+    STREAM_TYPE="$(lower "$STREAM_TYPE")"
+    case "$STREAM_TYPE" in
+        dub|sub) ;;
+        *) STREAM_TYPE="dub" ;;
+    esac
+
+    MENU_BACKEND="$(lower "$MENU_BACKEND")"
+
+    detect_api_mode
+
+    has_cmd curl || die "$(msg need_dep): curl"
+    has_cmd jq || die "$(msg need_dep): jq"
+
+    if [ "$SHOW_LOG" = "1" ]; then
+        show_history
+        exit 0
+    fi
+
+    if [ "$DELETE_LOG" = "1" ]; then
+        clear_history
+        exit 0
+    fi
+
+    if [ "$DOWNLOAD_MODE" = "1" ]; then
+        ensure_downloader
+    else
+        resolve_player
+    fi
+
+    QUERY="$(trim "$QUERY")"
+    if [ -z "$QUERY" ]; then
+        printf '%s' "$(msg prompt_query)"
+        IFS= read -r QUERY
+        QUERY="$(trim "$QUERY")"
+    fi
+
+    [ -n "$QUERY" ] || die "$(msg choose_query)"
+
+    raw_results_json="$(search_titles "$QUERY")" || exit 1
+    results_json="$(filter_search_results "$raw_results_json" "$QUERY")" || exit 1
+    results_count="$(printf '%s' "$results_json" | jq -r 'if type == "array" then length else 0 end' 2>/dev/null || printf '0')"
+    is_number "$results_count" || results_count=0
+    [ "$results_count" -gt 0 ] || die "$(msg no_results)"
+
+    menu_lines="$(format_search_menu "$results_json")" || exit 1
+    selected_line="$(pick_from_lines "$menu_lines" "$(msg select_title)" "$QUERY")" || exit 1
+    [ -n "$selected_line" ] || exit 1
+
+    title_id="$(extract_title_id "$selected_line")"
+    [ -n "$title_id" ] || die "Failed to parse selected title"
+
+    title_json="$(fetch_title "$title_id")" || exit 1
+    title_name="$(get_title_name "$title_json")" || exit 1
+
+    available_episodes="$(get_episodes "$title_json")" || exit 1
+    [ -n "$available_episodes" ] || die "$(msg no_results)"
+
+    if [ -n "$EPISODE_ARG" ] && [ -n "$RANGE_ARG" ]; then
+        die "Use only one of --episode or --range"
+    fi
+
+    if [ -n "$EPISODE_ARG" ]; then
+        selected_episodes="$EPISODE_ARG"
+    elif [ -n "$RANGE_ARG" ]; then
+        start="$(printf '%s' "$RANGE_ARG" | cut -d '-' -f 1)"
+        end="$(printf '%s' "$RANGE_ARG" | cut -d '-' -f 2)"
+        [ "$start" != "$end" ] || die "$(msg invalid_range)"
+        is_number "$start" || die "$(msg invalid_range)"
+        is_number "$end" || die "$(msg invalid_range)"
+        [ "$start" -le "$end" ] || die "$(msg invalid_range)"
+        selected_episodes="$(build_range "$start" "$end")"
+    else
+        ep_menu="$(printf '%s\n' "$available_episodes" | awk -v lbl="$(msg episode_word)" '{printf "[%s] %s %s\n", $1, lbl, $1}')"
+        selected_ep_line="$(pick_from_lines "$ep_menu" "$(msg select_episode)")" || exit 1
+        [ -n "$selected_ep_line" ] || exit 1
+        selected_episodes="$(printf '%s' "$selected_ep_line" | sed -n 's/^\[\([^]]*\)\].*/\1/p')"
+    fi
+
+    selected_episodes="$(printf '%s\n' "$selected_episodes" | sed '/^[[:space:]]*$/d')"
+    [ -n "$selected_episodes" ] || die "$(msg invalid_episode)"
+
+    validate_episode_selection "$selected_episodes" "$available_episodes"
+
+    for ep in $selected_episodes; do
+        stream_url="$(get_stream_url "$title_json" "$ep")" || exit 1
+        [ -n "$stream_url" ] || die "$(msg stream_missing): $ep"
+
+        if [ "$DOWNLOAD_MODE" = "1" ]; then
+            printf '%s: %s - %s %s\n' "$(msg downloading)" "$title_name" "$(msg episode_word)" "$ep"
+            download_episode "$stream_url" "$title_name" "$ep"
+        else
+            printf '%s: %s - %s %s\n' "$(msg playing)" "$title_name" "$(msg episode_word)" "$ep"
+            play_episode "$stream_url" "$title_name" "$ep"
+        fi
+
+        append_history "$title_id" "$title_name" "$ep" "$QUALITY" "$STREAM_TYPE"
+    done
+}
+
+main "$@"
