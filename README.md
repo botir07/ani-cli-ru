@@ -70,7 +70,6 @@ py ui_tui.py
 ### Windows PowerShell
 
 ```powershell
-# пример
 cd C:\Users\<username>\Desktop\ani-cli-ru-main
 py -m pip install -r requirements.txt
 py ui_tui.py
@@ -79,7 +78,6 @@ py ui_tui.py
 ### Windows CMD
 
 ```bat
-REM пример
 cd /d C:\Users\<username>\Desktop\ani-cli-ru-main
 py -m pip install -r requirements.txt
 py ui_tui.py
