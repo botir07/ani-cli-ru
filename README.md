@@ -25,7 +25,6 @@ ani-cli-ru-main/
     CONTRIBUTING.md
     hacking.md
 ```
-
 ## Основные возможности
 
 - Поиск аниме по RU/EN названию
@@ -35,6 +34,11 @@ ani-cli-ru-main/
 - Авто fallback качества, если выбранное недоступно
 - Скачивание эпизода (`d`)
 - Короткий `Status` в информационной панели
+
+## UI Демо
+<p align="center">
+  <img src="assets/UI-demo.gif" width="800">
+</p>
 
 ## Зависимости
 
