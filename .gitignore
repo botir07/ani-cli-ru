@@ -1,48 +1,29 @@
-<<<<<<< HEAD
-# Local Files
-*.local
-*.log
-*.tmp
-
-# History
-*.history
-*.DS_Store
-
-# Downloads
-*.zip
-*.tar.gz
-*.tgz
-
-# System Files
-*.bak
-*.swp
-*.swo
-
-# Python Artifacts
+# Python artifacts
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-env/
+.pytest_cache/
+
+# Virtual envs
+.venv/
 venv/
-=======
-# Runtime history/state
+env/
+
+# Runtime files
 *.log
-.history
 *.tmp
-
-# Project-specific history path examples
-.ani-cli-ru/
+.history
 .state/
+.ani-cli-ru/
 
-# Editor and OS
+# App output
+downloads/
+tmp-downloads/
+
+# Editor/OS
 .DS_Store
-.vscode/
 .idea/
+.vscode/
 *.swp
 *~
-
-# Test/download artifacts
-downloads/
-/tmp-downloads/
->>>>>>> b7c7c13 (ani-cli)
