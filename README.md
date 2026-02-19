@@ -8,6 +8,8 @@
 ## Features
 
 - Search anime by Russian or English names
+- Built-in home UI (Search / Recommendations / History / Clear)
+- Personalized recommendations (history + fresh/latest + random picks)
 - Stream episodes with `mpv`, `VLC`, or `IINA`
 - Download episodes with `aria2c`, `wget`, or PowerShell built-in downloader
 - Bilingual UI: Russian (`ru`) and English (`en`)
@@ -82,6 +84,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ani-cli-ru "атака титанов"
 ani-cli-ru -d -r 1-3 "naruto"
 ani-cli-ru --sub "your lie in april"
+ani-cli-ru --recommend
 ```
 
 PowerShell equivalents:
@@ -90,6 +93,7 @@ PowerShell equivalents:
 .\ani-cli-ru.ps1 "атака титанов"
 .\ani-cli-ru.ps1 -d -r 1-3 "naruto"
 .\ani-cli-ru.ps1 --sub "your lie in april"
+.\ani-cli-ru.ps1 --recommend
 ```
 
 Language control:
@@ -116,6 +120,7 @@ $env:ANI_CLI_LANG = "en"; .\ani-cli-ru.ps1 "query"
 - `-r`, `--range N-M`: Play/download episode range
 - `-l`, `--logview`: View history
 - `-D`, `--delete`: Clear history
+- `--recommend`: Open recommendations directly
 - `--lang ru|en`: Set UI language
 - `--sub`: Request subtitles stream when available
 - `--vlc`: Use VLC player

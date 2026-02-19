@@ -37,6 +37,7 @@ $script:SHOW_LOG = $false
 $script:DELETE_LOG = $false
 $script:PLAYER_FORCED = $false
 $script:SUBTITLE_FALLBACK_WARNED = $false
+$script:RECOMMEND_MODE = $false
 $script:EPISODE_ARG = ''
 $script:RANGE_ARG = ''
 $script:QUERY = ''
@@ -75,6 +76,18 @@ $script:Messages = @{
         episode_word         = 'Эпизод'
         download_saved       = 'Сохранено'
         invalid_choice       = 'Некорректный выбор'
+        select_recommend     = 'Рекомендации'
+        no_recommendations   = 'Рекомендации пока недоступны'
+        recommend_reason_history = 'Недавно смотрели'
+        recommend_reason_latest  = 'Свежий релиз'
+        recommend_reason_random  = 'Случайный выбор'
+        home_prompt          = 'Главное меню'
+        home_action_search   = 'Поиск аниме'
+        home_action_recommend = 'Рекомендации'
+        home_action_history  = 'История'
+        home_action_clear    = 'Очистить историю'
+        home_action_exit     = 'Выход'
+        home_header          = 'ani-cli-ru'
     }
     en = @{
         error                = 'Error'
@@ -107,6 +120,18 @@ $script:Messages = @{
         episode_word         = 'Episode'
         download_saved       = 'Saved'
         invalid_choice       = 'Invalid selection'
+        select_recommend     = 'Recommendations'
+        no_recommendations   = 'No recommendations available yet'
+        recommend_reason_history = 'Recently watched'
+        recommend_reason_latest  = 'Fresh release'
+        recommend_reason_random  = 'Random pick'
+        home_prompt          = 'Main menu'
+        home_action_search   = 'Search anime'
+        home_action_recommend = 'Recommendations'
+        home_action_history  = 'History'
+        home_action_clear    = 'Clear history'
+        home_action_exit     = 'Exit'
+        home_header          = 'ani-cli-ru'
     }
 }
 
@@ -240,6 +265,7 @@ function Print-Help {
   -r, --range N-M        Диапазон эпизодов
   -l, --logview          Показать историю просмотра
   -D, --delete           Очистить историю просмотра
+  --recommend            Показать рекомендации
   --lang ru|en           Язык интерфейса
   --sub                  Запросить поток с субтитрами (если доступен)
   --vlc                  Использовать VLC
@@ -261,6 +287,7 @@ function Print-Help {
   ./ani-cli-ru.ps1 -q 720p "код гиас"
   ./ani-cli-ru.ps1 -e 5 "demon slayer"
   ./ani-cli-ru.ps1 -r 1-3 -d "one piece"
+  ./ani-cli-ru.ps1 --recommend
 "@
     } else {
 @"
@@ -276,6 +303,7 @@ Options:
   -r, --range N-M        Episode range
   -l, --logview          Show watch history
   -D, --delete           Clear watch history
+  --recommend            Show recommendations
   --lang ru|en           UI language
   --sub                  Request subtitles stream (if available)
   --vlc                  Use VLC player
@@ -297,6 +325,7 @@ Examples:
   ./ani-cli-ru.ps1 -q 720p "code geass"
   ./ani-cli-ru.ps1 -e 5 "demon slayer"
   ./ani-cli-ru.ps1 -r 1-3 -d "one piece"
+  ./ani-cli-ru.ps1 --recommend
 "@
     }
 }
@@ -422,6 +451,306 @@ function Append-History {
     $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $line = "{0}`t{1}`t{2}`t{3}`t{4}`t{5}" -f $ts, $TitleId, $TitleName, $Episode, $Quality, $StreamType
     Add-Content -LiteralPath $script:HIST_FILE -Value $line
+}
+
+function Is-InteractiveSession {
+    try {
+        return (-not [Console]::IsInputRedirected) -and (-not [Console]::IsOutputRedirected)
+    } catch {
+        return $false
+    }
+}
+
+function Merge-TitleNames {
+    param(
+        [string]$Primary,
+        [string]$Secondary
+    )
+
+    $first = Trim-Value $Primary
+    $second = Trim-Value $Secondary
+
+    if ([string]::IsNullOrWhiteSpace($first)) {
+        return $second
+    }
+
+    if ([string]::IsNullOrWhiteSpace($second)) {
+        return $first
+    }
+
+    if ((Lower $first) -eq (Lower $second)) {
+        return $first
+    }
+
+    return "$first / $second"
+}
+
+function Format-CatalogLine {
+    param(
+        [string]$Id,
+        [string]$PrimaryTitle,
+        [string]$SecondaryTitle,
+        [string]$Type,
+        [string]$Year,
+        [string]$Episodes,
+        [string]$Tag = ''
+    )
+
+    $title = Merge-TitleNames -Primary $PrimaryTitle -Secondary $SecondaryTitle
+    if ([string]::IsNullOrWhiteSpace($title)) {
+        $title = 'Unknown'
+    }
+
+    $safeType = if ([string]::IsNullOrWhiteSpace($Type)) { '?' } else { $Type }
+    $safeYear = if ([string]::IsNullOrWhiteSpace($Year)) { '?' } else { $Year }
+    $safeEps = if ([string]::IsNullOrWhiteSpace($Episodes)) { '?' } else { $Episodes }
+
+    $line = "[{0}] {1} | {2} | {3} | eps: {4}" -f $Id, $title, $safeType, $safeYear, $safeEps
+    if (-not [string]::IsNullOrWhiteSpace($Tag)) {
+        $line = $line + " | " + $Tag
+    }
+
+    return $line
+}
+
+function Show-HomeBanner {
+    $runMode = if ($script:DOWNLOAD_MODE) { 'download' } else { 'play' }
+    Write-Host ''
+    Write-Host '=========================================================='
+    Write-Host (" {0} | quality={1} | stream={2} | mode={3}" -f (Msg 'home_header'), $script:QUALITY, $script:STREAM_TYPE, $runMode)
+    Write-Host '=========================================================='
+}
+
+function Show-HomeMenu {
+    Show-HomeBanner
+
+    $options = @(
+        "[search] " + (Msg 'home_action_search')
+        "[recommend] " + (Msg 'home_action_recommend')
+        "[history] " + (Msg 'home_action_history')
+        "[clear] " + (Msg 'home_action_clear')
+        "[exit] " + (Msg 'home_action_exit')
+    )
+
+    $picked = Select-Line -Lines $options -Prompt (Msg 'home_prompt')
+    if ([string]::IsNullOrWhiteSpace($picked)) {
+        return 'exit'
+    }
+
+    $m = [Regex]::Match($picked, '^\[([^\]]+)\]')
+    if (-not $m.Success) {
+        return 'exit'
+    }
+
+    return (Lower $m.Groups[1].Value)
+}
+
+function Resolve-InteractiveIntent {
+    while ($true) {
+        $action = Show-HomeMenu
+        switch ($action) {
+            'search' { return 'search' }
+            'recommend' { return 'recommend' }
+            'history' {
+                Show-History
+                continue
+            }
+            'clear' {
+                Clear-History
+                continue
+            }
+            default { return 'exit' }
+        }
+    }
+}
+
+function Get-HistoryEntries {
+    Ensure-History
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    foreach ($line in Get-Content -LiteralPath $script:HIST_FILE) {
+        $parts = $line -split "`t"
+        if ($parts.Count -lt 4) {
+            continue
+        }
+
+        $titleId = Trim-Value ([string]$parts[1])
+        if ([string]::IsNullOrWhiteSpace($titleId)) {
+            continue
+        }
+
+        $episodeText = if ($parts.Count -ge 4) { Trim-Value ([string]$parts[3]) } else { '' }
+        $episodeNum = -1
+        [void][int]::TryParse($episodeText, [ref]$episodeNum)
+
+        $rows.Add([PSCustomObject]@{
+            Timestamp  = Trim-Value ([string]$parts[0])
+            TitleId    = $titleId
+            TitleName  = if ($parts.Count -ge 3) { Trim-Value ([string]$parts[2]) } else { '' }
+            Episode    = $episodeText
+            EpisodeNum = $episodeNum
+        })
+    }
+
+    return @($rows)
+}
+
+function Get-RecommendationsFromHistory {
+    $history = @(Get-HistoryEntries)
+    if ($history.Count -eq 0) {
+        return @()
+    }
+
+    $items = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+
+    for ($i = $history.Count - 1; $i -ge 0; $i--) {
+        $row = $history[$i]
+        if ($seen.Contains($row.TitleId)) {
+            continue
+        }
+
+        [void]$seen.Add($row.TitleId)
+        $nextEpisode = ''
+        if ($row.EpisodeNum -ge 0) {
+            $nextEpisode = [string]($row.EpisodeNum + 1)
+        }
+
+        $episodeLabel = if ([string]::IsNullOrWhiteSpace($nextEpisode)) { $row.Episode } else { "$($row.Episode) -> $nextEpisode" }
+        if ([string]::IsNullOrWhiteSpace($episodeLabel)) {
+            $episodeLabel = '?'
+        }
+
+        $titleLabel = if ([string]::IsNullOrWhiteSpace($row.TitleName)) { "Title $($row.TitleId)" } else { $row.TitleName }
+        $items.Add([PSCustomObject]@{
+            Id               = $row.TitleId
+            PrimaryTitle     = $titleLabel
+            SecondaryTitle   = ''
+            Type             = 'history'
+            Year             = '?'
+            Episodes         = $episodeLabel
+            Reason           = Msg 'recommend_reason_history'
+            SuggestedEpisode = $nextEpisode
+        })
+
+        if ($items.Count -ge 6) {
+            break
+        }
+    }
+
+    return @($items)
+}
+
+function New-RecommendationItemFromV1Release {
+    param(
+        $Item,
+        [string]$Reason
+    )
+
+    $id = Trim-Value ([string]$Item.id)
+    if ([string]::IsNullOrWhiteSpace($id)) {
+        return $null
+    }
+
+    $ru = if ($Item.name.main) { [string]$Item.name.main } else { '' }
+    $en = if ($Item.name.english) { [string]$Item.name.english } else { '' }
+    $year = if ($Item.year) { [string]$Item.year } else { '?' }
+    $type = if ($Item.type.value) { [string]$Item.type.value } elseif ($Item.type.string) { [string]$Item.type.string } else { '?' }
+
+    $latest = if ($null -ne $Item.latest_episode) { [string]$Item.latest_episode } else { '' }
+    $total = if ($null -ne $Item.episodes_total) { [string]$Item.episodes_total } else { '' }
+    $eps = '?'
+    if (-not [string]::IsNullOrWhiteSpace($latest) -and -not [string]::IsNullOrWhiteSpace($total)) {
+        $eps = "$latest/$total"
+    } elseif (-not [string]::IsNullOrWhiteSpace($latest)) {
+        $eps = $latest
+    } elseif (-not [string]::IsNullOrWhiteSpace($total)) {
+        $eps = $total
+    }
+
+    return [PSCustomObject]@{
+        Id               = $id
+        PrimaryTitle     = $ru
+        SecondaryTitle   = $en
+        Type             = $type
+        Year             = $year
+        Episodes         = $eps
+        Reason           = $Reason
+        SuggestedEpisode = ''
+    }
+}
+
+function Get-RecommendationsV1 {
+    $items = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+
+    foreach ($item in (Get-RecommendationsFromHistory)) {
+        if ($seen.Contains($item.Id)) {
+            continue
+        }
+
+        [void]$seen.Add($item.Id)
+        $items.Add($item)
+    }
+
+    $latest = @(Normalize-ToArray (Invoke-ApiRequest -Endpoint 'anime/releases/latest' -Query @{ limit = '30' }))
+    foreach ($release in $latest) {
+        $rec = New-RecommendationItemFromV1Release -Item $release -Reason (Msg 'recommend_reason_latest')
+        if ($null -eq $rec) {
+            continue
+        }
+
+        if ($seen.Contains($rec.Id)) {
+            continue
+        }
+
+        [void]$seen.Add($rec.Id)
+        $items.Add($rec)
+        if ($items.Count -ge 18) {
+            break
+        }
+    }
+
+    if ($items.Count -lt 18) {
+        $random = @(Normalize-ToArray (Invoke-ApiRequest -Endpoint 'anime/releases/random' -Query @{ limit = '10' }))
+        foreach ($release in $random) {
+            $rec = New-RecommendationItemFromV1Release -Item $release -Reason (Msg 'recommend_reason_random')
+            if ($null -eq $rec) {
+                continue
+            }
+
+            if ($seen.Contains($rec.Id)) {
+                continue
+            }
+
+            [void]$seen.Add($rec.Id)
+            $items.Add($rec)
+            if ($items.Count -ge 18) {
+                break
+            }
+        }
+    }
+
+    return @($items)
+}
+
+function Get-Recommendations {
+    switch ($script:API_MODE) {
+        'v1' { return @(Get-RecommendationsV1) }
+        default { return @(Get-RecommendationsFromHistory) }
+    }
+}
+
+function Format-RecommendationMenu {
+    param([object[]]$Items)
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($item in $Items) {
+        $line = Format-CatalogLine -Id $item.Id -PrimaryTitle $item.PrimaryTitle -SecondaryTitle $item.SecondaryTitle -Type $item.Type -Year $item.Year -Episodes $item.Episodes -Tag $item.Reason
+        $lines.Add($line)
+    }
+
+    return $lines.ToArray()
 }
 
 function Ensure-MenuBackend {
@@ -875,13 +1204,13 @@ function Format-SearchMenuV1 {
 
     $lines = [System.Collections.Generic.List[string]]::new()
     foreach ($item in (Normalize-ToArray $Results)) {
-        $id = $item.id
-        $ru = if ($item.name.main) { $item.name.main } else { '' }
-        $en = if ($item.name.english) { $item.name.english } else { '' }
-        $year = if ($item.year) { $item.year } else { '?' }
-        $type = if ($item.type.value) { $item.type.value } else { '?' }
-        $eps = if ($item.episodes_total) { $item.episodes_total } else { '?' }
-        $lines.Add("[$id] $ru / $en | $type | $year | eps: $eps")
+        $id = [string]$item.id
+        $ru = if ($item.name.main) { [string]$item.name.main } else { '' }
+        $en = if ($item.name.english) { [string]$item.name.english } else { '' }
+        $year = if ($item.year) { [string]$item.year } else { '?' }
+        $type = if ($item.type.value) { [string]$item.type.value } else { '?' }
+        $eps = if ($item.episodes_total) { [string]$item.episodes_total } else { '?' }
+        $lines.Add((Format-CatalogLine -Id $id -PrimaryTitle $ru -SecondaryTitle $en -Type $type -Year $year -Episodes $eps))
     }
     return $lines.ToArray()
 }
@@ -891,30 +1220,30 @@ function Format-SearchMenuV3 {
 
     $lines = [System.Collections.Generic.List[string]]::new()
     foreach ($item in (Normalize-ToArray $Results)) {
-        $id = $item.id
-        $ru = if ($item.names.ru) { $item.names.ru } elseif ($item.names.en) { $item.names.en } else { '' }
-        $en = if ($item.names.en) { $item.names.en } else { '' }
-        $year = if ($item.season.year) { $item.season.year } else { '?' }
+        $id = [string]$item.id
+        $ru = if ($item.names.ru) { [string]$item.names.ru } elseif ($item.names.en) { [string]$item.names.en } else { '' }
+        $en = if ($item.names.en) { [string]$item.names.en } else { '' }
+        $year = if ($item.season.year) { [string]$item.season.year } else { '?' }
 
         $type = '?'
         if ($item.type.string) {
-            $type = $item.type.string
+            $type = [string]$item.type.string
         } elseif ($item.type.full_string) {
-            $type = $item.type.full_string
+            $type = [string]$item.type.full_string
         }
 
         $eps = '?'
         if ($item.player.episodes.string) {
-            $eps = $item.player.episodes.string
+            $eps = [string]$item.player.episodes.string
         } elseif ($item.player.episodes.last) {
-            $eps = $item.player.episodes.last
+            $eps = [string]$item.player.episodes.last
         } elseif ($item.episodes_total) {
-            $eps = $item.episodes_total
+            $eps = [string]$item.episodes_total
         } elseif ($item.type.episodes) {
-            $eps = $item.type.episodes
+            $eps = [string]$item.type.episodes
         }
 
-        $lines.Add("[$id] $ru / $en | $type | $year | eps: $eps")
+        $lines.Add((Format-CatalogLine -Id $id -PrimaryTitle $ru -SecondaryTitle $en -Type $type -Year $year -Episodes $eps))
     }
     return $lines.ToArray()
 }
@@ -1568,6 +1897,9 @@ function Parse-Args {
             '--delete' {
                 $script:DELETE_LOG = $true
             }
+            '--recommend' {
+                $script:RECOMMEND_MODE = $true
+            }
             '--lang' {
                 if ($i + 1 -ge $Argv.Count) {
                     Die (Msg 'invalid_lang')
@@ -1646,29 +1978,68 @@ function Main {
     }
 
     $script:QUERY = Trim-Value $script:QUERY
-    if ([string]::IsNullOrWhiteSpace($script:QUERY)) {
-        $script:QUERY = Trim-Value (Read-Host (Msg 'prompt_query'))
+    if (-not $script:RECOMMEND_MODE -and [string]::IsNullOrWhiteSpace($script:QUERY) -and (Is-InteractiveSession)) {
+        $intent = Resolve-InteractiveIntent
+        switch ($intent) {
+            'recommend' { $script:RECOMMEND_MODE = $true }
+            'search' { }
+            default { exit 0 }
+        }
     }
 
-    if ([string]::IsNullOrWhiteSpace($script:QUERY)) {
-        Die (Msg 'choose_query')
-    }
+    $selectedRecommendation = $null
+    $titleId = ''
+    if ($script:RECOMMEND_MODE) {
+        $recommendations = @(Get-Recommendations)
+        if ($recommendations.Count -le 0) {
+            Die (Msg 'no_recommendations')
+        }
 
-    $rawResults = Search-Titles -Query $script:QUERY
-    $results = @(Normalize-ToArray $rawResults)
-    if ($results.Count -le 0) {
-        Die (Msg 'no_results')
-    }
+        $menuLines = Format-RecommendationMenu -Items $recommendations
+        $selectedLine = Select-Line -Lines $menuLines -Prompt (Msg 'select_recommend')
+        if ([string]::IsNullOrWhiteSpace($selectedLine)) {
+            exit 1
+        }
 
-    $menuLines = Format-SearchMenu -Results $results
-    $selectedLine = Select-Line -Lines $menuLines -Prompt (Msg 'select_title') -Hint $script:QUERY
-    if ([string]::IsNullOrWhiteSpace($selectedLine)) {
-        exit 1
-    }
+        $titleId = Extract-TitleId $selectedLine
+        if ([string]::IsNullOrWhiteSpace($titleId)) {
+            Die 'Failed to parse selected title'
+        }
 
-    $titleId = Extract-TitleId $selectedLine
-    if ([string]::IsNullOrWhiteSpace($titleId)) {
-        Die 'Failed to parse selected title'
+        $selectedRecommendation = $recommendations | Where-Object { $_.Id -eq $titleId } | Select-Object -First 1
+        if (
+            $null -ne $selectedRecommendation -and
+            [string]::IsNullOrWhiteSpace($script:EPISODE_ARG) -and
+            [string]::IsNullOrWhiteSpace($script:RANGE_ARG) -and
+            -not [string]::IsNullOrWhiteSpace([string]$selectedRecommendation.SuggestedEpisode)
+        ) {
+            $script:EPISODE_ARG = [string]$selectedRecommendation.SuggestedEpisode
+        }
+    } else {
+        if ([string]::IsNullOrWhiteSpace($script:QUERY)) {
+            $script:QUERY = Trim-Value (Read-Host (Msg 'prompt_query'))
+        }
+
+        if ([string]::IsNullOrWhiteSpace($script:QUERY)) {
+            Die (Msg 'choose_query')
+        }
+
+        $rawResults = Search-Titles -Query $script:QUERY
+        $results = @(Normalize-ToArray $rawResults)
+        if ($results.Count -le 0) {
+            Die (Msg 'no_results')
+        }
+
+        $menuLines = Format-SearchMenu -Results $results
+        $selectedLine = Select-Line -Lines $menuLines -Prompt (Msg 'select_title') -Hint $script:QUERY
+        if ([string]::IsNullOrWhiteSpace($selectedLine)) {
+            exit 1
+        }
+
+        $titleId = Extract-TitleId $selectedLine
+        if ([string]::IsNullOrWhiteSpace($titleId)) {
+            Die 'Failed to parse selected title'
+        }
     }
 
     $titleJson = Fetch-Title -Id $titleId

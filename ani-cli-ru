@@ -20,6 +20,7 @@ SHOW_LOG=0
 DELETE_LOG=0
 PLAYER_FORCED=0
 SUBTITLE_FALLBACK_WARNED=0
+RECOMMEND_MODE=0
 EPISODE_ARG=""
 RANGE_ARG=""
 QUERY=""
@@ -135,6 +136,7 @@ print_help() {
   -r, --range N-M        Диапазон эпизодов
   -l, --logview          Показать историю просмотра
   -D, --delete           Очистить историю просмотра
+  --recommend            Show recommendations
   --lang ru|en           Язык интерфейса
   --sub                  Запросить поток с субтитрами (если доступен)
   --vlc                  Использовать VLC
@@ -157,6 +159,7 @@ print_help() {
   ${0##*/} -q 720p "код гиас"
   ${0##*/} -e 5 "demon slayer"
   ${0##*/} -r 1-3 -d "one piece"
+  ${0##*/} --recommend
   ANI_CLI_LANG=en ${0##*/} --sub "naruto"
 EOF_HELP
             ;;
@@ -174,6 +177,7 @@ Options:
   -r, --range N-M        Episode range
   -l, --logview          Show watch history
   -D, --delete           Clear watch history
+  --recommend            Show recommendations
   --lang ru|en           UI language
   --sub                  Request subtitles stream (if available)
   --vlc                  Use VLC player
@@ -196,6 +200,7 @@ Examples:
   ${0##*/} -q 720p "code geass"
   ${0##*/} -e 5 "demon slayer"
   ${0##*/} -r 1-3 -d "one piece"
+  ${0##*/} --recommend
   ANI_CLI_LANG=ru ${0##*/} --sub "naruto"
 EOF_HELP
             ;;
@@ -256,6 +261,202 @@ append_history() {
     ensure_history
     ts="$(date '+%Y-%m-%d %H:%M:%S')"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$1" "$2" "$3" "$4" "$5" >>"$HIST_FILE"
+}
+
+is_interactive_session() {
+    [ -t 0 ] && tty -s 2>/dev/null
+}
+
+show_home_banner() {
+    mode="play"
+    [ "$DOWNLOAD_MODE" = "1" ] && mode="download"
+    printf '\n'
+    printf '==========================================================\n'
+    printf ' ani-cli-ru | quality=%s | stream=%s | mode=%s\n' "$QUALITY" "$STREAM_TYPE" "$mode"
+    printf '==========================================================\n'
+}
+
+show_home_menu() {
+    show_home_banner
+
+    home_lines="$(cat <<'EOF_HOME'
+[search] Search anime
+[recommend] Recommendations
+[history] History
+[clear] Clear history
+[exit] Exit
+EOF_HOME
+)"
+
+    picked="$(pick_from_lines "$home_lines" "Main menu")" || return 1
+    printf '%s' "$picked" | sed -n 's/^\[\([^]]*\)\].*/\1/p'
+}
+
+resolve_interactive_intent() {
+    while :; do
+        action="$(show_home_menu)" || {
+            printf 'exit\n'
+            return 0
+        }
+
+        case "$(lower "$action")" in
+            search)
+                printf 'search\n'
+                return 0
+                ;;
+            recommend)
+                printf 'recommend\n'
+                return 0
+                ;;
+            history)
+                show_history
+                ;;
+            clear)
+                clear_history
+                ;;
+            *)
+                printf 'exit\n'
+                return 0
+                ;;
+        esac
+    done
+}
+
+history_recommendations_json() {
+    ensure_history
+    [ -s "$HIST_FILE" ] || {
+        printf '[]'
+        return 0
+    }
+
+    jq -Rn '
+        [inputs | split("\t") | select(length >= 4) | {
+            title_id: .[1],
+            title_name: .[2],
+            episode: .[3]
+        }]
+        | reverse
+        | reduce .[] as $row ({seen: {}, items: []};
+            if ($row.title_id == "" or (.seen[$row.title_id] // false)) then
+                .
+            else
+                .seen[$row.title_id] = true
+                | .items += [$row]
+            end
+          )
+        | .items[:6]
+        | map(
+            (try (.episode | tonumber + 1 | tostring) catch "") as $next
+            | {
+                id: .title_id,
+                primary: (.title_name // ""),
+                secondary: "",
+                type: "history",
+                year: "?",
+                episodes: (
+                    if $next != "" then
+                        ((.episode // "?") + " -> " + $next)
+                    elif (.episode // "") != "" then
+                        .episode
+                    else
+                        "?"
+                    end
+                ),
+                reason: "history",
+                suggested_episode: $next
+            }
+        )
+    ' "$HIST_FILE"
+}
+
+release_recommendations_json() {
+    json="$1"
+    reason="$2"
+
+    printf '%s' "$json" | jq -c --arg reason "$reason" '
+        map({
+            id: (.id | tostring),
+            primary: (.name.main // .name.english // ""),
+            secondary: (.name.english // ""),
+            type: (.type.value // .type.string // "?"),
+            year: ((.year // "?") | tostring),
+            episodes: (
+                if (.latest_episode != null and .episodes_total != null) then
+                    ((.latest_episode | tostring) + "/" + (.episodes_total | tostring))
+                elif (.latest_episode != null) then
+                    (.latest_episode | tostring)
+                elif (.episodes_total != null) then
+                    (.episodes_total | tostring)
+                else
+                    "?"
+                end
+            ),
+            reason: $reason,
+            suggested_episode: ""
+        })
+    '
+}
+
+recommendations_json() {
+    history_json="$(history_recommendations_json)"
+
+    if [ "$API_MODE" = "v1" ]; then
+        latest_raw="$(api_request "anime/releases/latest" --data-urlencode "limit=30")" || exit 1
+        latest_json="$(release_recommendations_json "$latest_raw" "latest")"
+
+        random_raw="$(api_request "anime/releases/random" --data-urlencode "limit=10")" || exit 1
+        random_json="$(release_recommendations_json "$random_raw" "random")"
+
+        printf '%s\n%s\n%s\n' "$history_json" "$latest_json" "$random_json" | jq -s '
+            add
+            | reduce .[] as $item ({seen: {}, items: []};
+                ($item.id // "") as $id
+                | if ($id == "" or (.seen[$id] // false)) then
+                    .
+                  else
+                    .seen[$id] = true
+                    | .items += [$item]
+                  end
+              )
+            | .items[:18]
+        '
+    else
+        printf '%s' "$history_json"
+    fi
+}
+
+format_recommendation_menu() {
+    printf '%s' "$1" | jq -r '
+        .[]
+        | .id as $id
+        | (
+            .primary as $p
+            | .secondary as $s
+            | if ($p // "") == "" then
+                ($s // "Unknown")
+              elif ($s // "") == "" or (($p | ascii_downcase) == ($s | ascii_downcase)) then
+                $p
+              else
+                ($p + " / " + $s)
+              end
+          ) as $title
+        | (
+            if .reason == "history" then "Recently watched"
+            elif .reason == "latest" then "Fresh release"
+            elif .reason == "random" then "Random pick"
+            else (.reason // "rec")
+            end
+          ) as $reason
+        | "[\($id)] \($title) | \(.type // "?") | \(.year // "?") | eps: \(.episodes // "?") | \($reason)"
+    '
+}
+
+recommendation_suggested_episode() {
+    json="$1"
+    title_id="$2"
+    printf '%s' "$json" | jq -r --arg id "$title_id" '
+        [.[] | select(.id == $id)][0].suggested_episode // empty
+    '
 }
 
 ensure_menu_backend() {
@@ -438,12 +639,23 @@ format_search_menu_v1() {
     printf '%s' "$1" | jq -r '
         .[]
         | .id as $id
-        | (.name.main // "") as $ru
+        | (.name.main // .name.english // "") as $ru
         | (.name.english // "") as $en
         | (.year // "?") as $year
         | (.type.value // "?") as $type
         | (.episodes_total // "?") as $eps
-        | "[\($id)] \($ru) / \($en) • \($type) • \($year) • eps: \($eps)"
+        | (
+            if ($ru != "" and $en != "" and (($ru | ascii_downcase) != ($en | ascii_downcase))) then
+                ($ru + " / " + $en)
+            elif $ru != "" then
+                $ru
+            elif $en != "" then
+                $en
+            else
+                "Unknown"
+            end
+          ) as $title
+        | "[\($id)] \($title) | \($type) | \($year) | eps: \($eps)"
     '
 }
 
@@ -456,7 +668,18 @@ format_search_menu_v3() {
         | (.season.year // "?") as $year
         | (.type.string // .type.full_string // "?") as $type
         | (.player.episodes.string // .player.episodes.last // .episodes_total // .type.episodes // "?") as $eps
-        | "[\($id)] \($ru) / \($en) • \($type) • \($year) • eps: \($eps)"
+        | (
+            if ($ru != "" and $en != "" and (($ru | ascii_downcase) != ($en | ascii_downcase))) then
+                ($ru + " / " + $en)
+            elif $ru != "" then
+                $ru
+            elif $en != "" then
+                $en
+            else
+                "Unknown"
+            end
+          ) as $title
+        | "[\($id)] \($title) | \($type) | \($year) | eps: \($eps)"
     '
 }
 
@@ -875,6 +1098,9 @@ parse_args() {
             -D|--delete)
                 DELETE_LOG=1
                 ;;
+            --recommend)
+                RECOMMEND_MODE=1
+                ;;
             --lang)
                 shift
                 [ $# -gt 0 ] || die "$(msg invalid_lang)"
@@ -949,26 +1175,54 @@ main() {
     fi
 
     QUERY="$(trim "$QUERY")"
-    if [ -z "$QUERY" ]; then
-        printf '%s' "$(msg prompt_query)"
-        IFS= read -r QUERY
-        QUERY="$(trim "$QUERY")"
+    if [ "$RECOMMEND_MODE" != "1" ] && [ -z "$QUERY" ] && is_interactive_session; then
+        intent="$(resolve_interactive_intent)"
+        case "$intent" in
+            recommend) RECOMMEND_MODE=1 ;;
+            search) ;;
+            *) exit 0 ;;
+        esac
     fi
 
-    [ -n "$QUERY" ] || die "$(msg choose_query)"
+    if [ "$RECOMMEND_MODE" = "1" ]; then
+        rec_json="$(recommendations_json)" || exit 1
+        rec_count="$(printf '%s' "$rec_json" | jq -r 'if type == "array" then length else 0 end' 2>/dev/null || printf '0')"
+        is_number "$rec_count" || rec_count=0
+        [ "$rec_count" -gt 0 ] || die "No recommendations available"
 
-    raw_results_json="$(search_titles "$QUERY")" || exit 1
-    results_json="$(filter_search_results "$raw_results_json" "$QUERY")" || exit 1
-    results_count="$(printf '%s' "$results_json" | jq -r 'if type == "array" then length else 0 end' 2>/dev/null || printf '0')"
-    is_number "$results_count" || results_count=0
-    [ "$results_count" -gt 0 ] || die "$(msg no_results)"
+        menu_lines="$(format_recommendation_menu "$rec_json")" || exit 1
+        selected_line="$(pick_from_lines "$menu_lines" "Recommendations")" || exit 1
+        [ -n "$selected_line" ] || exit 1
 
-    menu_lines="$(format_search_menu "$results_json")" || exit 1
-    selected_line="$(pick_from_lines "$menu_lines" "$(msg select_title)" "$QUERY")" || exit 1
-    [ -n "$selected_line" ] || exit 1
+        title_id="$(extract_title_id "$selected_line")"
+        [ -n "$title_id" ] || die "Failed to parse selected title"
 
-    title_id="$(extract_title_id "$selected_line")"
-    [ -n "$title_id" ] || die "Failed to parse selected title"
+        if [ -z "$EPISODE_ARG" ] && [ -z "$RANGE_ARG" ]; then
+            suggested_ep="$(recommendation_suggested_episode "$rec_json" "$title_id")"
+            [ -n "$suggested_ep" ] && EPISODE_ARG="$suggested_ep"
+        fi
+    else
+        if [ -z "$QUERY" ]; then
+            printf '%s' "$(msg prompt_query)"
+            IFS= read -r QUERY
+            QUERY="$(trim "$QUERY")"
+        fi
+
+        [ -n "$QUERY" ] || die "$(msg choose_query)"
+
+        raw_results_json="$(search_titles "$QUERY")" || exit 1
+        results_json="$(filter_search_results "$raw_results_json" "$QUERY")" || exit 1
+        results_count="$(printf '%s' "$results_json" | jq -r 'if type == "array" then length else 0 end' 2>/dev/null || printf '0')"
+        is_number "$results_count" || results_count=0
+        [ "$results_count" -gt 0 ] || die "$(msg no_results)"
+
+        menu_lines="$(format_search_menu "$results_json")" || exit 1
+        selected_line="$(pick_from_lines "$menu_lines" "$(msg select_title)" "$QUERY")" || exit 1
+        [ -n "$selected_line" ] || exit 1
+
+        title_id="$(extract_title_id "$selected_line")"
+        [ -n "$title_id" ] || die "Failed to parse selected title"
+    fi
 
     title_json="$(fetch_title "$title_id")" || exit 1
     title_name="$(get_title_name "$title_json")" || exit 1
