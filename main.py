@@ -118,6 +118,7 @@ class AniCliRuGui(tk.Tk):
         self.dark_mode_var = tk.BooleanVar(value=False)
         self.selected_episode_var = tk.StringVar()
         self.watch_mode_var = tk.StringVar(value="RU HLS (AniLibria)")
+        self.resolution_var = tk.StringVar(value="1080")
         self.style = ttk.Style(self)
 
         self._build_menu()
@@ -242,6 +243,18 @@ class AniCliRuGui(tk.Tk):
         self.watch_mode_combo.pack(side=tk.LEFT, padx=(8, 6))
         self.watch_open_btn = ttk.Button(watch_bar, text="Open", command=self.open_selected_episode)
         self.watch_open_btn.pack(side=tk.LEFT)
+
+        res_bar = ttk.Frame(right)
+        res_bar.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(res_bar, text="Resolution").pack(side=tk.LEFT)
+        self.resolution_combo = ttk.Combobox(
+            res_bar,
+            textvariable=self.resolution_var,
+            state="readonly",
+            width=10,
+            values=["4K", "2K", "1080", "720", "480", "360"],
+        )
+        self.resolution_combo.pack(side=tk.LEFT, padx=(8, 6))
         
         # Обновляем watch mode при изменении озвучки
         self.dubbing_var.trace_add("write", lambda *args: self._update_watch_mode_options())
@@ -527,7 +540,32 @@ class AniCliRuGui(tk.Tk):
             )
             return
 
-        url = streams.get("hls_1080") or streams.get("hls_720") or streams.get("hls_480")
+        # Маппинг выбранных разрешений на ключи в streams
+        resolution_map = {
+            "4K": ["hls_2160", "hls_4k", "hls_1080"],
+            "2K": ["hls_1440", "hls_2k", "hls_1080"],
+            "1080": ["hls_1080", "hls_720"],
+            "720": ["hls_720", "hls_480"],
+            "480": ["hls_480", "hls_360"],
+            "360": ["hls_360", "hls_480"],
+        }
+
+        selected_res = self.resolution_var.get()
+        quality_keys = resolution_map.get(selected_res, ["hls_1080", "hls_720", "hls_480"])
+
+        url = None
+        for key in quality_keys:
+            url = streams.get(key)
+            if url:
+                break
+
+        if not url:
+            # Если ни одно качество не найдено, пробуем все доступные
+            for key in ["hls_1080", "hls_720", "hls_480", "hls_360"]:
+                url = streams.get(key)
+                if url:
+                    break
+
         if not url:
             messagebox.showinfo(
                 "ani-cli-ru GUI",
@@ -542,7 +580,7 @@ class AniCliRuGui(tk.Tk):
             self._set_status(str(exc))
             return
 
-        self._set_status(f"Opened RU HLS in {player_name} for episode {selected}: {release['title']}")
+        self._set_status(f"Opened RU HLS ({selected_res}) in {player_name} for episode {selected}: {release['title']}")
 
     def _open_external_player(self, release):
         url = release.get("external_player_url") or release.get("manual_external_player_url")
@@ -640,14 +678,27 @@ class AniCliRuGui(tk.Tk):
         name = player["name"]
         exe = player["path"]
         if name == "mpv":
-            cmd = [exe, "--force-window=yes", f"--force-media-title={title}"]
+            cmd = [
+                exe,
+                "--force-window=yes",
+                f"--force-media-title={title}",
+                "--keepaspect=yes",
+                "--panscan=0",
+                "--cache=yes",
+                "--cache-secs=10",
+                "--demuxer-max-bytes=128MiB",
+                "--hls-bitrate=9999999",
+                "--hr-seek=yes",
+                "--hwdec=no",
+                "--prefetch-playlist=yes",
+            ]
             if referer:
                 cmd.append(f"--http-header-fields=Referer: {referer}")
             cmd.append(url)
         elif name == "vlc":
             cmd = [exe, url]
             if referer:
-                cmd.append(f":http-referrer={referer}")
+                cmd.insert(1, f":http-referrer={referer}")
         else:
             cmd = [exe, url]
 
@@ -659,10 +710,22 @@ class AniCliRuGui(tk.Tk):
 
     @staticmethod
     def _find_player_command():
+        # Проверяем PATH
         for name in ("mpv", "vlc", "ffplay"):
             path = shutil.which(name)
             if path:
                 return {"name": name, "path": path}
+        
+        # Проверяем стандартные пути установки VLC на Windows
+        vlc_paths = [
+            r"C:\Program Files\VideoLAN\VLC\vlc.exe",
+            r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
+            str(Path.home() / "AppData/Local/Programs/VLC/vlc.exe"),
+        ]
+        for vlc_path in vlc_paths:
+            if Path(vlc_path).exists():
+                return {"name": "vlc", "path": vlc_path}
+        
         return None
 
     def _resolve_kodik_subs_stream(self, external_player_url, episode_number):
@@ -1223,7 +1286,7 @@ class AniCliRuGui(tk.Tk):
             if ordinal is None or ordinal <= 0:
                 continue
             streams = {}
-            for key in ("hls_1080", "hls_720", "hls_480"):
+            for key in ("hls_2160", "hls_4k", "hls_1440", "hls_2k", "hls_1080", "hls_720", "hls_480", "hls_360"):
                 value = episode.get(key)
                 if isinstance(value, str) and value.strip():
                     streams[key] = value.strip()
