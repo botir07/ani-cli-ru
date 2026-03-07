@@ -1,102 +1,116 @@
-<<<<<<< HEAD
-# Development Guide
-
-## API Documentation
-- Details about the API endpoints and usage.
-
-## Testing Instructions
-- Instructions on how to run tests for the project.
-
-## Contribution Guidelines
-- Guidelines for contributing to the project.
-  - Fork the repository.
-  - Create a new branch for your feature or fix.
-  - Make your changes and commit them.
-  - Submit a pull request for review.
-
-
----
-
-*Last updated: 2026-02-12*
-=======
 # hacking.md
 
 ## Overview
 
-`ani-cli-ru` is a single POSIX shell entrypoint (`./ani-cli-ru`) with function-based modules inside one file.
+`ani-cli-ru` is a multi-platform anime streaming tool with:
 
-Main layers:
+1. **POSIX shell script** (`ani-cli-ru`) - Terminal-based CLI
+2. **PowerShell script** (`ani-cli-ru.ps1`) - Windows CLI
+3. **Python GUI** (`main.py`) - Tkinter-based graphical interface
 
-1. CLI parsing and configuration
-2. Localization (`ru` / `en`) and user messaging
-3. API adapter (`v1` default, `v3` compatibility)
-4. Interactive selection (fzf/rofi)
-5. Playback/download execution
-6. History storage
+## GUI Architecture (main.py)
 
-## Design Goals
+### Classes
 
-- POSIX `sh` compatibility (no bash-only syntax)
-- Minimal external dependencies (`curl`, `jq`, `fzf`/`rofi`)
-- Predictable option handling and validation
-- Clear fallback behavior for player/downloader/API variants
+1. **AniLibriaClient** - API client for AniLibria
+   - Supports multi-language dubbing selection
+   - Available dubbing: RU, EN, UK, TR + subtitles
+   
+2. **HistoryStore** - Local history persistence
+   - Stores watched releases in JSON format
+   - Max 50 items (configurable)
 
-## Important Functions
+3. **AniCliRuGui** - Main GUI application
+   - Tkinter-based interface
+   - Dark/light theme support
+   - Multi-language UI (ru/en)
+   - Multi-language dubbing selection
 
-- `parse_args`: parses CLI options and query text
-- `detect_api_mode`: selects API adapter (`auto|v1|v3`)
-- `search_titles` / `fetch_title`: adapter-aware data retrieval
-- `get_episodes`: normalizes episode list from API payload
-- `get_stream_url`: normalizes stream URL selection by quality/type
-- `resolve_player`: player detection and fallback
-- `append_history` / `show_history` / `clear_history`: history lifecycle
+### Dubbing System
+
+The GUI supports multiple dubbing languages through Kodik/AniQit integration:
+
+```python
+DUB_LANGUAGES = [
+    {"code": "ru", "name": "Русский (AniLibria)", "type": "dub"},
+    {"code": "en", "name": "English (AniQit)", "type": "dub"},
+    {"code": "uk", "name": "Українська (AniQit)", "type": "dub"},
+    {"code": "tr", "name": "Türkçe (AniQit)", "type": "dub"},
+    {"code": "sub_ru", "name": "Русские субтитры", "type": "sub"},
+    {"code": "sub_en", "name": "English subtitles", "type": "sub"},
+]
+```
+
+### Key Methods
+
+- `_apply_dubbing()` - Apply selected dubbing language
+- `_update_watch_mode_options()` - Update playback options based on dubbing
+- `_resolve_kodik_dub_stream()` - Resolve foreign dubbing stream from Kodik
+- `_pick_kodik_dub_translation()` - Select dubbing by language keywords
+
+### Stream Resolution Flow
+
+1. **RU Dubbing**: Direct HLS from AniLibria CDN
+2. **EN/UK/TR Dubbing**: 
+   - Fetch Kodik player page
+   - Parse available translations
+   - Select matching dubbing by language keywords
+   - Resolve stream URL through `/ftor` endpoint
+3. **Subtitles**:
+   - Enable translations on Kodik
+   - Find subtitles translation
+   - Resolve subtitle stream
 
 ## API Details
 
 Default API base:
-
 - `https://api.anilibria.app/api/v1`
 
-Compatibility mode:
-
-- `ANI_CLI_API_BASE=https://api.anilibria.tv/v3`
-- `ANI_CLI_API_MODE=v3`
-
-The script normalizes the differences between v1 and v3 payloads so downstream logic stays the same.
+Key endpoints:
+- `app/search/releases` - Search anime
+- `anime/releases/latest` - Latest releases
+- `anime/releases/random` - Random picks
+- `anime/releases/{id}` - Release details with episodes
 
 ## Local Development
 
-Run syntax checks:
+### Running GUI
 
 ```sh
-sh -n ani-cli-ru
+cd ani-cli-ru
+python main.py
 ```
 
-Show help/version:
+### Syntax Check
 
 ```sh
-./ani-cli-ru --help
-./ani-cli-ru --version
+python -m py_compile main.py
 ```
 
-Test history in temp directory:
+### Dependencies
 
 ```sh
-ANI_CLI_HIST_DIR=/tmp/ani-cli-ru-test ./ani-cli-ru -D
-ANI_CLI_HIST_DIR=/tmp/ani-cli-ru-test ./ani-cli-ru -l
-```
-
-Smoke test without launching player:
-
-```sh
-ANI_CLI_DOWNLOAD_DIR=/tmp/ani-cli-ru-test-dl ./ani-cli-ru -d -e 1 "9329"
+pip install requests
 ```
 
 ## Coding Standards
 
-- Keep code POSIX sh-safe
-- Quote variables unless intentional word splitting
-- Validate user inputs before API or player calls
-- Prefer small, focused functions
-- Avoid parsing JSON with `sed`; use `jq`
->>>>>>> b7c7c13 (ani-cli)
+- Python 3.8+ compatible
+- Type hints where beneficial
+- Clear error messages with context
+- Async operations for network calls
+- Thread-safe GUI updates via `after()`
+
+## Testing Checklist
+
+- [ ] Search functionality (RU/EN queries)
+- [ ] Dubbing selection (all 6 options)
+- [ ] Episode selection
+- [ ] Stream playback (RU HLS + External)
+- [ ] Dark/light theme toggle
+- [ ] History persistence
+- [ ] Recommendations loading
+
+---
+
+*Last updated: 2026-03-06*

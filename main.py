@@ -16,8 +16,19 @@ import requests
 class AniLibriaClient:
     BASE_URL = "https://api.anilibria.app/api/v1"
 
-    def __init__(self, language="ru", timeout=20):
+    # Доступные языки озвучки
+    DUB_LANGUAGES = [
+        {"code": "ru", "name": "Русский (AniLibria)", "type": "dub"},
+        {"code": "en", "name": "English (AniQit)", "type": "dub"},
+        {"code": "uk", "name": "Українська (AniQit)", "type": "dub"},
+        {"code": "tr", "name": "Türkçe (AniQit)", "type": "dub"},
+        {"code": "sub_ru", "name": "Русские субтитры", "type": "sub"},
+        {"code": "sub_en", "name": "English subtitles", "type": "sub"},
+    ]
+
+    def __init__(self, language="ru", dubbing="ru", timeout=20):
         self.language = language
+        self.dubbing = dubbing
         self.timeout = timeout
 
     def _get(self, path, params=None):
@@ -91,17 +102,18 @@ class HistoryStore:
 class AniCliRuGui(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.client = AniLibriaClient(language="ru")
+        self.client = AniLibriaClient(language="ru", dubbing="ru")
         self.history = HistoryStore()
         self.release_map = {}
         self.menu_widgets = []
 
-        self.title("ani-cli-ru GUI")
-        self.geometry("1080x660")
+        self.title("ani-cli-ru GUI - Multi-Language")
+        self.geometry("1200x700")
         self.minsize(900, 560)
 
         self.query_var = tk.StringVar()
         self.lang_var = tk.StringVar(value="ru")
+        self.dubbing_var = tk.StringVar(value="ru")
         self.status_var = tk.StringVar(value="Ready")
         self.dark_mode_var = tk.BooleanVar(value=False)
         self.selected_episode_var = tk.StringVar()
@@ -119,10 +131,25 @@ class AniCliRuGui(tk.Tk):
         rec_menu.add_command(label="Latest Releases", command=self.load_latest_recommendations)
         rec_menu.add_command(label="Random Picks", command=self.load_random_recommendations)
         menu.add_cascade(label="Recommendations", menu=rec_menu)
+        
+        # Меню выбора озвучки
+        dub_menu = tk.Menu(menu, tearoff=False)
+        self.dub_vars = {}
+        for dub in AniLibriaClient.DUB_LANGUAGES:
+            var = tk.StringVar(value="")
+            self.dub_vars[dub["code"]] = var
+            dub_menu.add_radiobutton(
+                label=dub["name"],
+                variable=var,
+                value=dub["code"],
+                command=lambda d=dub["code"]: self._apply_dubbing(d)
+            )
+        menu.add_cascade(label="Dubbing / Озвучка", menu=dub_menu)
+        
         view_menu = tk.Menu(menu, tearoff=False)
         view_menu.add_checkbutton(label="Dark Mode", variable=self.dark_mode_var, command=self.toggle_dark_mode)
         menu.add_cascade(label="View", menu=view_menu)
-        self.menu_widgets = [menu, rec_menu, view_menu]
+        self.menu_widgets = [menu, rec_menu, dub_menu, view_menu]
         self.config(menu=menu)
 
     def _build_layout(self):
@@ -144,6 +171,18 @@ class AniCliRuGui(tk.Tk):
         )
         lang.pack(side=tk.LEFT)
         lang.bind("<<ComboboxSelected>>", lambda _: self._apply_language())
+
+        ttk.Label(top, text="Dub").pack(side=tk.LEFT, padx=(12, 4))
+        dub_values = [d["name"] for d in AniLibriaClient.DUB_LANGUAGES]
+        self.dub_combo = ttk.Combobox(
+            top,
+            textvariable=self.dubbing_var,
+            values=dub_values,
+            state="readonly",
+            width=22,
+        )
+        self.dub_combo.pack(side=tk.LEFT)
+        self.dub_combo.bind("<<ComboboxSelected>>", lambda _: self._apply_dubbing_from_combo())
 
         ttk.Button(top, text="Search", command=self.search).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(top, text="Smart Recs", command=self.load_smart_recommendations).pack(side=tk.LEFT, padx=(6, 0))
@@ -203,6 +242,9 @@ class AniCliRuGui(tk.Tk):
         self.watch_mode_combo.pack(side=tk.LEFT, padx=(8, 6))
         self.watch_open_btn = ttk.Button(watch_bar, text="Open", command=self.open_selected_episode)
         self.watch_open_btn.pack(side=tk.LEFT)
+        
+        # Обновляем watch mode при изменении озвучки
+        self.dubbing_var.trace_add("write", lambda *args: self._update_watch_mode_options())
 
         self.detail_text = tk.Text(right, wrap=tk.WORD, state=tk.DISABLED)
         self.detail_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -215,6 +257,43 @@ class AniCliRuGui(tk.Tk):
 
     def _apply_language(self):
         self.client.language = self.lang_var.get().strip().lower() or "ru"
+
+    def _apply_dubbing(self, dub_code):
+        """Применить выбранную озвучку по коду"""
+        self.client.dubbing = dub_code
+        self.dubbing_var.set(dub_code)
+        self._update_watch_mode_options()
+        self._set_status(f"Selected dubbing: {dub_code}")
+
+    def _apply_dubbing_from_combo(self):
+        """Применить выбранную озвучку из комбобокса"""
+        selected_name = self.dubbing_var.get()
+        for dub in AniLibriaClient.DUB_LANGUAGES:
+            if dub["name"] == selected_name:
+                self.client.dubbing = dub["code"]
+                # Обновляем меню
+                for code, var in self.dub_vars.items():
+                    var.set(dub["code"] if code == dub["code"] else "")
+                self._update_watch_mode_options()
+                self._set_status(f"Selected dubbing: {dub['name']}")
+                break
+
+    def _update_watch_mode_options(self):
+        """Обновить опции режима просмотра на основе выбранной озвучки"""
+        dub_type = None
+        for dub in AniLibriaClient.DUB_LANGUAGES:
+            if dub["code"] == self.client.dubbing:
+                dub_type = dub["type"]
+                break
+        
+        if dub_type == "sub" or self.client.dubbing in ["en", "uk", "tr"]:
+            # Для субтитров и иностранных озвучек используем внешний плеер
+            self.watch_mode_combo.configure(values=["JP/Subs (External)"], state="readonly")
+            self.watch_mode_var.set("JP/Subs (External)")
+        else:
+            # Для русской озвучки доступны оба режима
+            self.watch_mode_combo.configure(values=["RU HLS (AniLibria)", "JP/Subs (External)"], state="readonly")
+            self.watch_mode_var.set("RU HLS (AniLibria)")
 
     def toggle_dark_mode(self):
         self._apply_theme()
@@ -479,11 +558,34 @@ class AniCliRuGui(tk.Tk):
             return
 
         title = release["title"]
-        self._run_async(
-            worker=lambda: self._resolve_kodik_subs_stream(self._with_translations_enabled(url), selected_episode),
-            on_success=lambda result: self._open_resolved_external_stream(result, title, selected_episode),
-            loading_text=f"Resolving JP/Subs source: {title}",
-        )
+        dubbing = self.client.dubbing
+        
+        # Определяем тип озвучки для выбора перевода
+        if dubbing == "ru":
+            # Русская озвучка - используем стандартный поток AniLibria
+            self._open_anilibria_hls(release)
+            return
+        elif dubbing in ["en", "uk", "tr"]:
+            # Иностранная озвучка - ищем соответствующий перевод
+            self._run_async(
+                worker=lambda: self._resolve_kodik_dub_stream(url, selected_episode, dubbing),
+                on_success=lambda result: self._open_resolved_external_stream(result, title, selected_episode),
+                loading_text=f"Resolving {dubbing} dubbing: {title}",
+            )
+        elif dubbing.startswith("sub_"):
+            # Субтитры
+            self._run_async(
+                worker=lambda: self._resolve_kodik_subs_stream(self._with_translations_enabled(url), selected_episode),
+                on_success=lambda result: self._open_resolved_external_stream(result, title, selected_episode),
+                loading_text=f"Resolving subtitles ({dubbing}): {title}",
+            )
+        else:
+            # По умолчанию - субтитры
+            self._run_async(
+                worker=lambda: self._resolve_kodik_subs_stream(self._with_translations_enabled(url), selected_episode),
+                on_success=lambda result: self._open_resolved_external_stream(result, title, selected_episode),
+                loading_text=f"Resolving JP/Subs source: {title}",
+            )
 
     def _prompt_kodik_player_url(self, release):
         title = release.get("title") or "anime"
@@ -740,6 +842,74 @@ class AniCliRuGui(tk.Tk):
             title = (item.get("title") or "").lower()
             if "субт" in title or "sub" in title:
                 return item
+        return None
+
+    def _resolve_kodik_dub_stream(self, external_player_url, episode_number, dubbing_code):
+        """Разрешить поток для иностранной озвучки (en, uk, tr)"""
+        page = self._fetch_kodik_page(external_player_url)
+        translations = page.get("translations") or []
+        
+        # Выбираем озвучку по коду языка
+        dub_translation = self._pick_kodik_dub_translation(translations, dubbing_code)
+        if not dub_translation:
+            raise RuntimeError(f"Kodik {dubbing_code} dubbing was not found for this title.")
+
+        dub_page_url = self._build_kodik_media_url(
+            media_type=dub_translation["media_type"],
+            media_id=dub_translation["media_id"],
+            media_hash=dub_translation["media_hash"],
+            source_url=external_player_url,
+        )
+        dub_page = self._fetch_kodik_page(dub_page_url)
+        episode_map = dub_page.get("episodes") or {}
+        episode = episode_map.get(int(episode_number))
+        if not episode:
+            raise RuntimeError(f"Dubbing does not have episode {episode_number}.")
+
+        ftor_data = self._kodik_ftor(
+            page_url=dub_page["page_url"],
+            url_params=dub_page["url_params"],
+            episode_id=episode["id"],
+            episode_hash=episode["hash"],
+        )
+        stream_url = self._pick_kodik_stream_url(ftor_data)
+        if not stream_url:
+            raise RuntimeError("Could not decode a playable Kodik stream URL.")
+
+        return {
+            "stream_url": stream_url,
+            "referer": dub_page["page_url"],
+            "translation_title": dub_translation.get("title") or f"{dubbing_code} dubbing",
+        }
+
+    @staticmethod
+    def _pick_kodik_dub_translation(translations, dubbing_code):
+        """Выбрать озвучку по коду языка"""
+        # Маппинг кодов языков на ключевые слова для поиска
+        lang_keywords = {
+            "en": ["english", "eng", "английский", "en "],
+            "uk": ["ukrainian", "ukr", "український", "украинский", "uk "],
+            "tr": ["turkish", "türkçe", "turk", "tr "],
+        }
+        
+        keywords = lang_keywords.get(dubbing_code, [])
+        
+        # Сначала ищем по translation_type
+        for item in translations:
+            trans_type = item.get("translation_type", "").lower()
+            if trans_type == "voice" or trans_type == "dubbing":
+                title = (item.get("title") or "").lower()
+                for keyword in keywords:
+                    if keyword in title:
+                        return item
+        
+        # Затем ищем по названию
+        for item in translations:
+            title = (item.get("title") or "").lower()
+            for keyword in keywords:
+                if keyword in title:
+                    return item
+        
         return None
 
     @staticmethod

@@ -4,12 +4,14 @@
 
 - POSIX shell version: `ani-cli-ru`
 - Windows PowerShell version: `ani-cli-ru.ps1` (with `ani-cli-ru.cmd` launcher)
+- **GUI version**: `main.py` (Tkinter-based with multi-language dubbing support)
 
 ## Features
 
 - Search anime by Russian or English names
 - Built-in home UI (Search / Recommendations / History / Clear)
 - Personalized recommendations (history + fresh/latest + random picks)
+- **Multi-language dubbing support** (RU, EN, UK, TR + subtitles)
 - Stream episodes with `mpv`, `VLC`, or `IINA`
 - Download episodes with `aria2c`, `wget`, or PowerShell built-in downloader
 - Bilingual UI: Russian (`ru`) and English (`en`)
@@ -71,6 +73,41 @@ Windows CMD launcher:
 ```bat
 ani-cli-ru.cmd "naruto"
 ```
+
+## GUI Application
+
+The Tkinter-based GUI application (`main.py`) provides a visual interface with:
+
+- **Multi-language dubbing selection**: Choose from Russian, English, Ukrainian, Turkish dubbing or subtitles
+- **Smart recommendations**: History-based + latest + random picks
+- **Episode selector**: Easy episode navigation with visual feedback
+- **Dark mode**: Toggle between light and dark themes
+- **Watch history**: Track and manage your viewing history
+
+### Running the GUI
+
+```sh
+# From project directory
+python main.py
+
+# Or install as application
+pip install requests
+python -m ani_cli_ru  # if installed as package
+```
+
+### GUI Features
+
+1. **Search Bar**: Enter anime title in Russian or English
+2. **Language Selector**: Choose UI language (ru/en)
+3. **Dubbing Selector**: Choose audio track:
+   - Русский (AniLibria) - Russian dub from AniLibria
+   - English (AniQit) - English dub
+   - Українська (AniQit) - Ukrainian dub
+   - Türkçe (AniQit) - Turkish dub
+   - Русские субтитры - Russian subtitles
+   - English subtitles - English subtitles
+4. **Watch Mode**: Select playback method based on dubbing
+5. **Episode Control**: Select specific episode to watch
 
 If script execution is blocked in PowerShell:
 
